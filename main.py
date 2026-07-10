@@ -86,7 +86,7 @@ async def gnwarn(
     username: discord.Member,
     warn_num: app_commands.Choice[int],
     reason: str,
-    from_user: discord.member
+    from_user: discord.Member
 ):
     data = load_data()
     guild_id = str(interaction.guild.id)
@@ -177,5 +177,5 @@ async def join_vc(interaction: discord.Interaction, channel: discord.VoiceChanne
     except Exception as e:
         await interaction.followup.send(f"❌ An error occurred: {e}")
 
-  # Run the bot using the token from the .env file
+        # Run the bot using the token from the .env file
 bot.run(os.getenv('DISCORD_TOKEN'))
