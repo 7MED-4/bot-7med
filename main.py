@@ -73,7 +73,7 @@ async def setupwarn(
 
 
 # ==========================================
-# COMMAND 2: /gnwarn (UPDATED)
+# COMMAND 2: /gnwarn (UPDATED WITH ROLE CHECK)
 # ==========================================
 @bot.tree.command(name="gnwarn", description="Warn a user using the Garde Nationale system")
 @app_commands.choices(warn_num=[
@@ -114,8 +114,18 @@ async def gnwarn(
     elif warn_num.value == 3: role_id_to_give = config["warn_3_id"]
         
     role_to_give = interaction.guild.get_role(role_id_to_give)
+    
     if role_to_give:
-        await username.add_roles(role_to_give)
+        # NEW: Check if the user already has the role
+        if role_to_give in username.roles:
+            await interaction.followup.send(f"❌ Aborted: {username.mention} already has the **{role_to_give.name}** role! No webhook was sent.")
+            return
+            
+        try:
+            await username.add_roles(role_to_give)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ Error: I don't have permission to give that role. Move my bot role higher in the server settings!")
+            return
             
     # Create Embed
     embed = discord.Embed(
@@ -129,10 +139,9 @@ async def gnwarn(
     # Send via Webhook
     try:
         webhook = discord.Webhook.from_url(config["webhook_url"], client=bot)
-        # CHANGED: Sends the username mention as text, THEN the embed
         await webhook.send(
             content=f"**User Warned:** {username.mention}", 
-           
+            
             embed=embed
         )
         
