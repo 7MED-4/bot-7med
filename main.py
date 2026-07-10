@@ -73,7 +73,7 @@ async def setupwarn(
 
 
 # ==========================================
-# COMMAND 2: /gnwarn
+# COMMAND 2: /gnwarn (UPDATED)
 # ==========================================
 @bot.tree.command(name="gnwarn", description="Warn a user using the Garde Nationale system")
 @app_commands.choices(warn_num=[
@@ -92,67 +92,50 @@ async def gnwarn(
     guild_id = str(interaction.guild.id)
     
     if guild_id not in data:
-        await interaction.response.send_message("❌ The warn system is not set up! An admin must use /setupwarn first.", ephemeral=True)
+        await interaction.response.send_message("❌ System not set up! Run /setupwarn first.", ephemeral=True)
         return
         
     config = data[guild_id]
     
-    # 1. Check Permissions: Does the user have the assigned mod_role?
+    # Permission Check
     mod_role_id = config["mod_role_id"]
     has_role = any(role.id == mod_role_id for role in interaction.user.roles)
     
     if not has_role and not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You do not have the required role to use this command.", ephemeral=True)
+        await interaction.response.send_message("❌ You do not have the required role.", ephemeral=True)
         return
 
-    # Defer response because Discord requires a fast reply, and webhooks take a second
     await interaction.response.defer(ephemeral=True)
 
-    # 2. Determine which role to give based on the panel choice
+    # Determine role
     role_id_to_give = None
-    if warn_num.value == 1:
-        role_id_to_give = config["warn_1_id"]
-    elif warn_num.value == 2:
-        role_id_to_give = config["warn_2_id"]
-    elif warn_num.value == 3:
-        role_id_to_give = config["warn_3_id"]
+    if warn_num.value == 1: role_id_to_give = config["warn_1_id"]
+    elif warn_num.value == 2: role_id_to_give = config["warn_2_id"]
+    elif warn_num.value == 3: role_id_to_give = config["warn_3_id"]
         
     role_to_give = interaction.guild.get_role(role_id_to_give)
-    
-    # 3. Give the role to the user
     if role_to_give:
-        try:
-            await username.add_roles(role_to_give)
-        except discord.Forbidden:
-            await interaction.followup.send("❌ Error: I don't have permission to give that role. Move my bot role higher in the server settings!")
-            return
+        await username.add_roles(role_to_give)
             
-    # 4. Create the Embed using the exact details you provided
+    # Create Embed
     embed = discord.Embed(
         title="WARN",
         description=f"**Username :** {username.mention}\n**Punishement :** {role_to_give.name if role_to_give else warn_num.name}\n**Reason :** {reason}\n**From :** {from_user}",
-        color=0xff0000 # Red color
+        color=0xff0000
     )
-    
-    # Top right image (Garde Nationale)
     embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1524529124310257685/1525128235669655642/Ecusson_garde_nationale_Tunisie.svg.png")
+    embed.set_footer(text="be careful for your behaviour", icon_url="https://cdn.discordapp.com/attachments/1524529124310257685/1525128002491383989/warn-removebg-preview.png")
     
-    # Footer with image
-    embed.set_footer(
-        text="be careful for your behaviour",
-        icon_url="https://cdn.discordapp.com/attachments/1524529124310257685/1525128002491383989/warn-removebg-preview.png"
-    )
-    
-    # 5. Send to Webhook
+    # Send via Webhook
     try:
         webhook = discord.Webhook.from_url(config["webhook_url"], client=bot)
-        # You can set the name of the webhook message sender here
-        await webhook.send(username="Système d'Avertissement", embed=embed)
+        # CHANGED: Sends the username mention as text, THEN the embed
+        await webhook.send(
+            content=f"**User Warned:** {username.mention}", 
+            username="Système d'Avertissement", 
+            embed=embed
+        )
         
-        # Confirm to the moderator that it worked
         await interaction.followup.send(f"✅ Warn successfully sent for {username.display_name}!")
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed to send the webhook. Ensure the URL is correct. Error: {e}")
-
-# Run the bot using the token from the .env file
-bot.run(os.getenv('DISCORD_TOKEN'))
+        await interaction.followup.send(f"❌ Failed to send webhook. Check your URL. Error: {e}")
