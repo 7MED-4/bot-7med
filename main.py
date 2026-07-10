@@ -141,7 +141,6 @@ async def gnwarn(
         webhook = discord.Webhook.from_url(config["webhook_url"], client=bot)
         await webhook.send(
             content=f"**User Warned:** {username.mention}", 
-            
             embed=embed
         )
         
