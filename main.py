@@ -132,7 +132,7 @@ async def gnwarn(
         # CHANGED: Sends the username mention as text, THEN the embed
         await webhook.send(
             content=f"**User Warned:** {username.mention}", 
-            username="Système d'Avertissement", 
+           
             embed=embed
         )
         
