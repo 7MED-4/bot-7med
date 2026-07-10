@@ -130,7 +130,7 @@ async def gnwarn(
     # Create Embed
     embed = discord.Embed(
         title="WARN",
-        description=f"**Username :** {username.mention}\n**Punishement :** {role_to_give.name if role_to_give else warn_num.name}\n**Reason :** {reason}\n**From :** {from_user}",
+        description=f"**Username :** {username.mention}\n**Punishement :** {role_to_give.name if role_to_give else warn_num.name}\n**Reason :** {reason}\n**From :** {from_user.mention}",
         color=0xff0000
     )
     embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1524529124310257685/1525128235669655642/Ecusson_garde_nationale_Tunisie.svg.png")
