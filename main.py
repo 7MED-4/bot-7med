@@ -139,3 +139,6 @@ async def gnwarn(
         await interaction.followup.send(f"✅ Warn successfully sent for {username.display_name}!")
     except Exception as e:
         await interaction.followup.send(f"❌ Failed to send webhook. Check your URL. Error: {e}")
+
+        # Run the bot using the token from the .env file
+bot.run(os.getenv('DISCORD_TOKEN'))
