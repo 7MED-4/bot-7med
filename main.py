@@ -149,5 +149,32 @@ async def gnwarn(
     except Exception as e:
         await interaction.followup.send(f"❌ Failed to send webhook. Check your URL. Error: {e}")
 
+# ==========================================
+# COMMAND 3: /join
+# ==========================================
+@bot.tree.command(name="join", description="Make the bot join a specific voice channel")
+@app_commands.describe(channel="Select the voice channel for the bot to join")
+async def join_vc(interaction: discord.Interaction, channel: discord.VoiceChannel):
+    # Acknowledge the command quickly so Discord doesn't time out
+    await interaction.response.defer()
+
+    # Check if the bot is already connected to voice in this server
+    voice_client = interaction.guild.voice_client
+
+    try:
+        if voice_client and voice_client.is_connected():
+            # If it is already in a channel, just move it to the new one
+            await voice_client.move_to(channel)
+            await interaction.followup.send(f"🏃‍♂️ Moved to {channel.mention}!")
+        else:
+            # If it is not in a channel, connect it
+            await channel.connect()
+            await interaction.followup.send(f"✅ Successfully joined {channel.mention}!")
+            
+    except discord.Forbidden:
+        await interaction.followup.send("❌ Error: I don't have the 'Connect' permission for that specific channel.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ An error occurred: {e}")
+
         # Run the bot using the token from the .env file
 bot.run(os.getenv('DISCORD_TOKEN'))
