@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import json
 import os
+import re
 from dotenv import load_dotenv
 
 # Load the token from the .env file
@@ -54,28 +55,35 @@ async def setupwarn(
     warn_1: discord.Role,
     warn_2: discord.Role,
     warn_3: discord.Role,
-    webhook_url: str
+    webhook_url: str,
+    footer_url: str,
+    thumbnail_url: str
 ):
     data = load_data()
     guild_id = str(interaction.guild.id)
     
-    # Save the IDs of the roles and the webhook URL to our JSON file
+    # Save the IDs of the roles, webhook, and photos to our JSON file
     data[guild_id] = {
         "mod_role_id": mod_role.id,
         "warn_1_id": warn_1.id,
         "warn_2_id": warn_2.id,
         "warn_3_id": warn_3.id,
-        "webhook_url": webhook_url
+        "webhook_url": webhook_url,
+        "footer_url": footer_url,
+        "thumbnail_url": thumbnail_url
     }
     save_data(data)
     
-    await interaction.response.send_message("✅ Warn system configured successfully! The data is saved safely on Railway.", ephemeral=True)
-
+    await interaction.response.send_message("✅ Warn system configured successfully with custom photos!", ephemeral=True)
 
 # ==========================================
-# COMMAND 2: /gnwarn (UPDATED WITH ROLE CHECK)
+# COMMAND 2: /gnwarn (UPDATED FOR MULTIPLE USERS & PHOTOS)
 # ==========================================
-@bot.tree.command(name="gnwarn", description="Warn a user using the Garde Nationale system")
+@bot.tree.command(name="gnwarn", description="Warn user(s) using the Garde Nationale system")
+@app_commands.describe(
+    usernames="Tag one or multiple users using @ (e.g., @John @Jane)",
+    from_users="The names or tags of who is issuing this warning"
+)
 @app_commands.choices(warn_num=[
     app_commands.Choice(name="Warn 1", value=1),
     app_commands.Choice(name="Warn 2", value=2),
@@ -83,10 +91,10 @@ async def setupwarn(
 ])
 async def gnwarn(
     interaction: discord.Interaction,
-    username: discord.Member,
+    usernames: str,
     warn_num: app_commands.Choice[int],
     reason: str,
-    from_user: discord.Member
+    from_users: str
 ):
     data = load_data()
     guild_id = str(interaction.guild.id)
@@ -115,36 +123,58 @@ async def gnwarn(
         
     role_to_give = interaction.guild.get_role(role_id_to_give)
     
-    if role_to_give:
-        # NEW: Check if the user already has the role
-        if role_to_give in username.roles:
-            await interaction.followup.send(f"❌ Aborted: {username.mention} already has the **{role_to_give.name}** role! No webhook was sent.")
-            return
+    # Extract all user IDs from the text string using regex
+    user_ids = re.findall(r'<@!?(\d+)>', usernames)
+    
+    if not user_ids:
+        await interaction.followup.send("❌ Error: You must actually tag the users with `@` in the usernames box!")
+        return
+
+    warned_successfully = []
+
+    # Loop through every person tagged and process their roles
+    for user_id in user_ids:
+        member = interaction.guild.get_member(int(user_id))
+        if member:
+            if role_to_give and role_to_give in member.roles:
+                await interaction.followup.send(f"⚠️ Skipped {member.mention}: They already have the **{role_to_give.name}** role.")
+                continue
             
-        try:
-            await username.add_roles(role_to_give)
-        except discord.Forbidden:
-            await interaction.followup.send("❌ Error: I don't have permission to give that role. Move my bot role higher in the server settings!")
-            return
-            
-    # Create Embed
+            if role_to_give:
+                try:
+                    await member.add_roles(role_to_give)
+                    warned_successfully.append(member.mention)
+                except discord.Forbidden:
+                    await interaction.followup.send(f"❌ Error: I don't have permission to give roles to {member.mention}.")
+            else:
+                warned_successfully.append(member.mention)
+
+    # If everyone skipped or errored out, stop the command
+    if not warned_successfully:
+        await interaction.followup.send("❌ No warnings were sent. Check the errors above.")
+        return
+
+    # Combine all successful tags into one string for the embed
+    final_usernames = " ".join(warned_successfully)
+        
+    # Create Embed using the saved photos
     embed = discord.Embed(
         title="WARN",
-        description=f"**Username :** {username.mention}\n**Punishement :** {role_to_give.name if role_to_give else warn_num.name}\n**Reason :** {reason}\n**From :** {from_user.mention}",
+        description=f"**Username(s) :** {final_usernames}\n**Punishment :** {role_to_give.name if role_to_give else warn_num.name}\n**Reason :** {reason}\n**From :** {from_users}",
         color=0xff0000
     )
-    embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1524529124310257685/1525128235669655642/Ecusson_garde_nationale_Tunisie.svg.png")
-    embed.set_footer(text="be careful for your behaviour", icon_url="https://cdn.discordapp.com/attachments/1524529124310257685/1525128002491383989/warn-removebg-preview.png")
+    embed.set_thumbnail(url=config.get("thumbnail_url", ""))
+    embed.set_footer(text="be careful for your behaviour", icon_url=config.get("footer_url", ""))
     
     # Send via Webhook
     try:
         webhook = discord.Webhook.from_url(config["webhook_url"], client=bot)
         await webhook.send(
-            content=f"**User Warned:** {username.mention}", 
+            content=f"**Users Warned:** {final_usernames}", 
             embed=embed
         )
         
-        await interaction.followup.send(f"✅ Warn successfully sent for {username.display_name}!")
+        await interaction.followup.send(f"✅ Warn successfully sent for {len(warned_successfully)} user(s)!")
     except Exception as e:
         await interaction.followup.send(f"❌ Failed to send webhook. Check your URL. Error: {e}")
 
