@@ -169,7 +169,7 @@ async def join_vc(interaction: discord.Interaction, channel: discord.VoiceChanne
             await interaction.followup.send(f"🏃‍♂️ Moved to {channel.mention}!")
         else:
             # If it is not in a channel, connect it
-            await channel.connect()
+            await channel.connect(reconnect=False)
             await interaction.followup.send(f"✅ Successfully joined {channel.mention}!")
             
     except discord.Forbidden:
