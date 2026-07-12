@@ -103,6 +103,26 @@ async def setupwarn(
 # ==========================================
 # COMMAND 2: /gnwarn — interactive multi-select version
 # ==========================================
+class ReasonModal(discord.ui.Modal, title="Set Warn Reason"):
+    reason_input = discord.ui.TextInput(
+        label="Reason",
+        style=discord.TextStyle.paragraph,
+        placeholder="Why is this warn being issued?",
+        required=True,
+        max_length=500,
+    )
+
+    def __init__(self, view: "GNWarnView"):
+        super().__init__()
+        self.view_ref = view
+        if view.reason:
+            self.reason_input.default = view.reason
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.view_ref.reason = str(self.reason_input.value)
+        await interaction.response.edit_message(content=self.view_ref.status_text(), view=self.view_ref)
+
+
 class GNWarnView(discord.ui.View):
     """
     Interactive panel shown after /gnwarn is run.
@@ -110,12 +130,12 @@ class GNWarnView(discord.ui.View):
     and multiple warn options (Warn 1/2/3 + On Probation).
     """
 
-    def __init__(self, invoker: discord.Member, guild: discord.Guild, config: dict, reason: str):
+    def __init__(self, invoker: discord.Member, guild: discord.Guild, config: dict):
         super().__init__(timeout=180)
         self.invoker = invoker
         self.guild = guild
         self.config = config
-        self.reason = reason
+        self.reason = ""
 
         self.selected_usernames: list[discord.Member] = []
         self.selected_from_users: list[discord.Member] = []
@@ -124,6 +144,13 @@ class GNWarnView(discord.ui.View):
         self.username_select.placeholder = "Select user(s) to warn"
         self.from_user_select.placeholder = "Select who is issuing the warn"
         self.warn_select.placeholder = "Select warn level(s) / On Probation"
+
+    def status_text(self) -> str:
+        reason_display = self.reason if self.reason else "*(not set — click **Set Reason**)*"
+        return (
+            "Fill out the panel below, then hit **Submit**:\n"
+            f"**Reason:** {reason_display}"
+        )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker.id:
@@ -160,10 +187,18 @@ class GNWarnView(discord.ui.View):
         self.selected_warns = select.values
         await interaction.response.defer()
 
+    # ---- Reason (opens a text modal, same as picking an option on the other panels) ----
+    @discord.ui.button(label="Set Reason", style=discord.ButtonStyle.blurple, row=3)
+    async def set_reason(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ReasonModal(self))
+
     # ---- Submit ----
-    @discord.ui.button(label="Submit", style=discord.ButtonStyle.green, row=3)
+    @discord.ui.button(label="Submit", style=discord.ButtonStyle.green, row=4)
     async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Basic validation
+        if not self.reason:
+            await interaction.response.send_message("❌ Set a reason first.", ephemeral=True)
+            return
         if not self.selected_usernames:
             await interaction.response.send_message("❌ Pick at least one user to warn.", ephemeral=True)
             return
@@ -251,7 +286,7 @@ class GNWarnView(discord.ui.View):
 
 
 @bot.tree.command(name="gnwarn", description="Warn one or more users using the Garde Nationale system")
-async def gnwarn(interaction: discord.Interaction, reason: str):
+async def gnwarn(interaction: discord.Interaction):
     data = load_data()
     guild_id = str(interaction.guild.id)
 
@@ -269,9 +304,9 @@ async def gnwarn(interaction: discord.Interaction, reason: str):
         await interaction.response.send_message("❌ You do not have the required role.", ephemeral=True)
         return
 
-    view = GNWarnView(invoker=interaction.user, guild=interaction.guild, config=config, reason=reason)
+    view = GNWarnView(invoker=interaction.user, guild=interaction.guild, config=config)
     await interaction.response.send_message(
-        "Fill out the panel below, then hit **Submit**:",
+        view.status_text(),
         view=view,
         ephemeral=True,
     )
