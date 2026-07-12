@@ -146,7 +146,7 @@ class GNWarnView(discord.ui.View):
         self.warn_select.placeholder = "Select warn level(s) / On Probation"
 
     def status_text(self) -> str:
-        reason_display = self.reason if self.reason else "*(not set — click **Set Reason**)*"
+        reason_display = self.reason if self.reason else "*(not set — use the reason dropdown below)*"
         return (
             "Fill out the panel below, then hit **Submit**:\n"
             f"**Reason:** {reason_display}"
@@ -187,9 +187,15 @@ class GNWarnView(discord.ui.View):
         self.selected_warns = select.values
         await interaction.response.defer()
 
-    # ---- Reason (opens a text modal, same as picking an option on the other panels) ----
-    @discord.ui.button(label="Set Reason", style=discord.ButtonStyle.blurple, row=3)
-    async def set_reason(self, interaction: discord.Interaction, button: discord.ui.Button):
+    # ---- Reason (select panel, opens a text modal — no standalone button) ----
+    @discord.ui.select(
+        placeholder="Select to set the reason",
+        min_values=1,
+        max_values=1,
+        row=3,
+        options=[discord.SelectOption(label="📝 Click to type a reason", value="set_reason")],
+    )
+    async def reason_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         await interaction.response.send_modal(ReasonModal(self))
 
     # ---- Submit ----
@@ -218,6 +224,16 @@ class GNWarnView(discord.ui.View):
             )
             return
 
+        # Warn levels must be picked "in a row" — e.g. Warn 1 + Warn 2 is fine,
+        # but Warn 1 + Warn 3 (skipping Warn 2) is not.
+        warn_numbers = sorted(int(w.split("_")[1]) for w in self.selected_warns if w in ("warn_1", "warn_2", "warn_3"))
+        if warn_numbers and (warn_numbers[-1] - warn_numbers[0] + 1) != len(warn_numbers):
+            await interaction.response.send_message(
+                "❌ Warn levels must be consecutive (e.g. Warn 1 + Warn 2 is fine, Warn 1 + Warn 3 is not).",
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer()
 
         # Keep a stable display order: Warn 1, Warn 2, Warn 3, On Probation
@@ -231,14 +247,25 @@ class GNWarnView(discord.ui.View):
             if role:
                 roles_to_give.append(role)
 
-        # Apply roles to every selected username
-        already_had = []
-        forbidden_users = []
+        # Verify none of the selected users already have any of the selected roles.
+        # If any do, abort the whole submission (no roles changed, no webhook sent).
+        conflicts = []
         for member in self.selected_usernames:
             for role in roles_to_give:
                 if role in member.roles:
-                    already_had.append(f"{member.display_name} already had {role.name}")
-                    continue
+                    conflicts.append(f"{member.display_name} already has **{role.name}**")
+
+        if conflicts:
+            await interaction.followup.send(
+                "❌ Aborted — the following already apply:\n" + "\n".join(conflicts),
+                ephemeral=True,
+            )
+            return
+
+        # Apply roles to every selected username
+        forbidden_users = []
+        for member in self.selected_usernames:
+            for role in roles_to_give:
                 try:
                     await member.add_roles(role)
                 except discord.Forbidden:
@@ -273,8 +300,6 @@ class GNWarnView(discord.ui.View):
         except Exception as e:
             result_msg = f"❌ Failed to send webhook. Check your URL. Error: {e}"
 
-        if already_had:
-            result_msg += "\n⚠️ " + " | ".join(already_had)
         if forbidden_users:
             result_msg += f"\n❌ Missing permission to role: {', '.join(forbidden_users)}"
 
