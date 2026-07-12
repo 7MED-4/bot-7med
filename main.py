@@ -12,7 +12,7 @@ load_dotenv()
 # We need the members intent to assign roles to users
 intents = discord.Intents.default()
 intents.members = True 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents.all)
 
 # This points directly to your permanent Railway cloud hard drive folder
 DATA_FILE = "/app/data/warn_config.json"
