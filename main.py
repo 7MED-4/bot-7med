@@ -341,6 +341,7 @@ async def gnwarn(interaction: discord.Interaction):
 # COMMAND 3: /join
 # ==========================================
 @bot.tree.command(name="join", description="Make the bot join your current voice channel")
+@app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
 async def join_vc(interaction: discord.Interaction):
     # Check if the user who typed the command is actually in a voice channel
     if not interaction.user.voice or not interaction.user.voice.channel:
