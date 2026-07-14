@@ -321,11 +321,11 @@ async def gnwarn(interaction: discord.Interaction):
 
     config = data[guild_id]
 
-    # Permission Check
+    # Permission Check — only the configured mod_role can use this command
     mod_role_id = config["mod_role_id"]
     has_role = any(role.id == mod_role_id for role in interaction.user.roles)
 
-    if not has_role and not interaction.user.guild_permissions.administrator:
+    if not has_role:
         await interaction.response.send_message("❌ You do not have the required role.", ephemeral=True)
         return
 
@@ -343,6 +343,11 @@ async def gnwarn(interaction: discord.Interaction):
 @bot.tree.command(name="join", description="Make the bot join your current voice channel")
 @app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
 async def join_vc(interaction: discord.Interaction):
+    # Extra safety check in case a server has manually changed the command's permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
+        return
+
     # Check if the user who typed the command is actually in a voice channel
     if not interaction.user.voice or not interaction.user.voice.channel:
         await interaction.response.send_message("❌ You must be in a voice channel to use this command!", ephemeral=True)
