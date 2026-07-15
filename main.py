@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+import asyncio
 import json
 import os
 import re
@@ -373,6 +374,138 @@ async def join_vc(interaction: discord.Interaction):
         await interaction.followup.send("❌ Error: I don't have the 'Connect' permission for your channel.")
     except Exception as e:
         await interaction.followup.send(f"❌ An error occurred: {e}")
+
+
+# ==========================================
+# COMMAND 4: /restrictrole
+# ==========================================
+@bot.tree.command(
+    name="restrictrole",
+    description="Toggle a role that blocks its holders from keeping self-added roles (Admins only)",
+)
+@app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
+async def restrictrole(interaction: discord.Interaction, role: discord.Role):
+    # Extra safety check in case a server has manually changed the command's permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
+        return
+
+    data = load_data()
+    guild_id = str(interaction.guild.id)
+
+    if guild_id not in data:
+        await interaction.response.send_message("❌ Run /setupwarn first to initialize this server's config.", ephemeral=True)
+        return
+
+    config = data[guild_id]
+    restricted = config.get("restricted_role_ids", [])
+
+    if role.id in restricted:
+        restricted.remove(role.id)
+        message = f"🔓 {role.mention} removed from the restricted list — its holders can self-add roles again."
+    else:
+        restricted.append(role.id)
+        message = f"🔒 {role.mention} added to the restricted list — any role its holders self-add will now be automatically removed."
+
+    config["restricted_role_ids"] = restricted
+    data[guild_id] = config
+    save_data(data)
+
+    await interaction.response.send_message(message, ephemeral=True)
+
+
+# ==========================================
+# COMMAND 5: /restrictlogchannel
+# ==========================================
+@bot.tree.command(
+    name="restrictlogchannel",
+    description="Set the channel where restricted-role removals get logged (Admins only)",
+)
+@app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
+async def restrictlogchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    # Extra safety check in case a server has manually changed the command's permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
+        return
+
+    data = load_data()
+    guild_id = str(interaction.guild.id)
+
+    if guild_id not in data:
+        await interaction.response.send_message("❌ Run /setupwarn first to initialize this server's config.", ephemeral=True)
+        return
+
+    config = data[guild_id]
+    config["restrict_log_channel_id"] = channel.id
+    data[guild_id] = config
+    save_data(data)
+
+    await interaction.response.send_message(f"✅ Restricted-role removals will now be logged in {channel.mention}.", ephemeral=True)
+
+
+# ==========================================
+# LISTENER: strip roles that restricted members give themselves
+# ==========================================
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    # Nothing to do if roles didn't change
+    if before.roles == after.roles:
+        return
+
+    added_roles = [r for r in after.roles if r not in before.roles]
+    if not added_roles:
+        return
+
+    data = load_data()
+    config = data.get(str(after.guild.id))
+    if not config:
+        return
+
+    restricted_ids = config.get("restricted_role_ids", [])
+    if not restricted_ids:
+        return
+
+    # Only relevant if the member still holds one of the restricted roles
+    if not any(r.id in restricted_ids for r in after.roles):
+        return
+
+    # Give Discord's audit log a moment to record the change
+    await asyncio.sleep(1)
+
+    try:
+        async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_role_update):
+            # Only revert if the member gave the role(s) to themselves
+            if entry.target.id == after.id and entry.user.id == after.id:
+                try:
+                    await after.remove_roles(*added_roles, reason="Restricted role: self-added role blocked")
+
+                    # Log the action as an embed in the configured channel
+                    log_channel_id = config.get("restrict_log_channel_id")
+                    if log_channel_id:
+                        log_channel = after.guild.get_channel(log_channel_id)
+                        if log_channel:
+                            now = discord.utils.utcnow()
+                            roles_text = ", ".join(r.name for r in added_roles)
+                            embed = discord.Embed(
+                                title="Self-Added Role Removed",
+                                description=(
+                                    f"**User :** {after.mention} ({after})\n"
+                                    f"**Role(s) Added :** {roles_text}\n"
+                                    f"**Time :** {discord.utils.format_dt(now, style='F')}"
+                                ),
+                                color=0xff9900,
+                            )
+                            embed.timestamp = now
+                            try:
+                                await log_channel.send(embed=embed)
+                            except discord.Forbidden:
+                                pass
+                except discord.Forbidden:
+                    pass
+                break
+    except discord.Forbidden:
+        # Bot is missing the "View Audit Log" permission
+        pass
 
 
 # Run the bot using the token from the .env file
