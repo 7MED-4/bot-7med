@@ -434,6 +434,41 @@ async def configristictedroles(
         ephemeral=True,
     )
 
+    
+# ==========================================
+# COMMAND 5: /members
+# ==========================================
+@bot.tree.command(name="members", description="List all members who have a specific role")
+async def members(interaction: discord.Interaction, role: discord.Role):
+    await interaction.response.defer()
+ 
+    role_members = sorted(role.members, key=lambda m: m.display_name.lower())
+ 
+    if not role_members:
+        await interaction.followup.send(f"No members currently have the {role.mention} role.")
+        return
+ 
+    # Split the member list into chunks that fit Discord's embed description limit (4096 chars)
+    chunks = []
+    current_chunk = ""
+    for member in role_members:
+        line = f"{member.mention}\n"
+        if len(current_chunk) + len(line) > 4000:
+            chunks.append(current_chunk)
+            current_chunk = line
+        else:
+            current_chunk += line
+    if current_chunk:
+        chunks.append(current_chunk)
+ 
+    embed_color = role.color if role.color.value else 0x5865F2
+ 
+    for i, chunk in enumerate(chunks):
+        title = f"Members with {role.name} ({len(role_members)})" if i == 0 else f"Members with {role.name} (cont.)"
+        embed = discord.Embed(title=title, description=chunk, color=embed_color)
+        await interaction.followup.send(embed=embed)
+ 
+ 
 
 # ==========================================
 # LISTENER: strip roles that restricted members give themselves
