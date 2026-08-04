@@ -434,7 +434,7 @@ async def configristictedroles(
         ephemeral=True,
     )
 
-    
+
 # ==========================================
 # COMMAND 5: /members
 # ==========================================
@@ -467,6 +467,44 @@ async def members(interaction: discord.Interaction, role: discord.Role):
         title = f"Members with {role.name} ({len(role_members)})" if i == 0 else f"Members with {role.name} (cont.)"
         embed = discord.Embed(title=title, description=chunk, color=embed_color)
         await interaction.followup.send(embed=embed)
+
+
+
+# ==========================================
+# COMMAND 6: /roleping
+# ==========================================
+@bot.tree.command(name="roleping", description="Ping every member who has a specific role (Admins only)")
+@app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
+async def roleping(interaction: discord.Interaction, role: discord.Role):
+    # Extra safety check in case a server has manually changed the command's permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
+        return
+ 
+    await interaction.response.defer()
+ 
+    role_members = role.members
+    if not role_members:
+        await interaction.followup.send(f"No members currently have the {role.mention} role.")
+        return
+ 
+    # Build actual @mentions (not an embed) so Discord notifies each member.
+    # Split into chunks under Discord's 2000-character message limit.
+    chunks = []
+    current_chunk = ""
+    for member in role_members:
+        addition = f"{member.mention} "
+        if len(current_chunk) + len(addition) > 1900:
+            chunks.append(current_chunk)
+            current_chunk = addition
+        else:
+            current_chunk += addition
+    if current_chunk:
+        chunks.append(current_chunk)
+ 
+    await interaction.followup.send(f"📣 Pinging {len(role_members)} member(s) with {role.mention}:")
+    for chunk in chunks:
+        await interaction.followup.send(chunk, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
  
  
 
