@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from dotenv import load_dotenv
 
 # Load the token from the .env file
@@ -494,18 +495,157 @@ async def roleping(interaction: discord.Interaction, role: discord.Role):
         content = content[:1970] + "\n... *(list truncated — too many members for one message)*"
 
     await interaction.response.send_message(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-    
 
 
 # ==========================================
-# LISTENER: strip roles that restricted members give themselves
+# COMMANDS 7-9: interview accept/reject system
+# (its own storage file, independent from /setupwarn and /configristictedroles)
 # ==========================================
-@bot.event
-async def on_member_update(before: discord.Member, after: discord.Member):
-    # Nothing to do if roles didn't change
-    if before.roles == after.roles:
+INTERVIEW_DATA_FILE = "/app/data/interview_config.json"
+
+
+def load_interview_data():
+    os.makedirs(os.path.dirname(INTERVIEW_DATA_FILE), exist_ok=True)
+    if os.path.exists(INTERVIEW_DATA_FILE):
+        with open(INTERVIEW_DATA_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_interview_data(data):
+    os.makedirs(os.path.dirname(INTERVIEW_DATA_FILE), exist_ok=True)
+    with open(INTERVIEW_DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+
+@bot.tree.command(name="setupinterview", description="Configure the interview accept/reject system (Admins only)")
+@app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
+async def setupinterview(
+    interaction: discord.Interaction,
+    interview_role: discord.Role,
+    role_accept: discord.Role,
+    role_reject: discord.Role,
+    accept_msg: str,
+    reject_msg: str,
+    channel: discord.TextChannel,
+    reject_time: int,
+):
+    # Extra safety check in case a server has manually changed the command's permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
         return
 
+    data = load_interview_data()
+    guild_id = str(interaction.guild.id)
+    # Preserve any in-progress reject timers if this is a re-configuration
+    active_rejections = data.get(guild_id, {}).get("active_rejections", {})
+
+    data[guild_id] = {
+        "interview_role_id": interview_role.id,
+        "role_accept_id": role_accept.id,
+        "role_reject_id": role_reject.id,
+        "accept_msg": accept_msg,
+        "reject_msg": reject_msg,
+        "channel_id": channel.id,
+        "reject_time_hours": reject_time,
+        "active_rejections": active_rejections,
+    }
+    save_interview_data(data)
+
+    await interaction.response.send_message(
+        f"✅ Interview system configured. Only {interview_role.mention} can use /interviewaccept and /interviewreject.",
+        ephemeral=True,
+    )
+
+
+def _get_interview_config(interaction: discord.Interaction):
+    """Returns (config, error_message). error_message is None if everything checks out."""
+    data = load_interview_data()
+    config = data.get(str(interaction.guild.id))
+    if not config:
+        return None, "❌ Interview system not set up! Run /setupinterview first."
+
+    interview_role_id = config["interview_role_id"]
+    has_role = any(role.id == interview_role_id for role in interaction.user.roles)
+    if not has_role:
+        return None, "❌ You do not have the required role to use this command."
+
+    return config, None
+
+
+@bot.tree.command(name="interviewaccept", description="Accept an interview candidate")
+async def interviewaccept(
+    interaction: discord.Interaction,
+    username: discord.Member,
+    reason: str,
+    whitelister: discord.Member,
+    by: discord.Member,
+):
+    config, error = _get_interview_config(interaction)
+    if error:
+        await interaction.response.send_message(error, ephemeral=True)
+        return
+
+    role_accept = interaction.guild.get_role(config["role_accept_id"])
+    if role_accept:
+        try:
+            await username.add_roles(role_accept)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to give that role.", ephemeral=True)
+            return
+
+    channel = interaction.guild.get_channel(config["channel_id"])
+    content = f"{whitelister.mention}\n{username.mention} {config['accept_msg']} **By:** {by.mention}"
+
+    if channel:
+        await channel.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+
+    await interaction.response.send_message(f"✅ {username.mention} has been accepted.", ephemeral=True)
+
+
+@bot.tree.command(name="interviewreject", description="Reject an interview candidate")
+async def interviewreject(
+    interaction: discord.Interaction,
+    username: discord.Member,
+    reason: str,
+    whitelister: discord.Member,
+    by: discord.Member,
+):
+    config, error = _get_interview_config(interaction)
+    if error:
+        await interaction.response.send_message(error, ephemeral=True)
+        return
+
+    role_reject = interaction.guild.get_role(config["role_reject_id"])
+    if role_reject:
+        try:
+            await username.add_roles(role_reject)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to give that role.", ephemeral=True)
+            return
+
+    # Start the reject-role protection timer
+    data = load_interview_data()
+    guild_id = str(interaction.guild.id)
+    guild_config = data[guild_id]
+    guild_config.setdefault("active_rejections", {})
+    guild_config["active_rejections"][str(username.id)] = time.time() + (config["reject_time_hours"] * 3600)
+    data[guild_id] = guild_config
+    save_interview_data(data)
+
+    channel = interaction.guild.get_channel(config["channel_id"])
+    content = (
+        f"{whitelister.mention}\n"
+        f"{username.mention} {config['reject_msg']} **Reason:** {reason} **By:** {by.mention}"
+    )
+
+    if channel:
+        await channel.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+
+    await interaction.response.send_message(f"✅ {username.mention} has been rejected.", ephemeral=True)
+
+
+async def handle_restricted_role_addition(before: discord.Member, after: discord.Member):
     added_roles = [r for r in after.roles if r not in before.roles]
     if not added_roles:
         return
@@ -560,6 +700,55 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     except discord.Forbidden:
         # Bot is missing the "View Audit Log" permission
         pass
+
+
+async def handle_interview_reject_protection(before: discord.Member, after: discord.Member):
+    removed_roles = [r for r in before.roles if r not in after.roles]
+    if not removed_roles:
+        return
+
+    data = load_interview_data()
+    guild_id = str(after.guild.id)
+    config = data.get(guild_id)
+    if not config:
+        return
+
+    role_reject_id = config.get("role_reject_id")
+    active = config.get("active_rejections", {})
+    member_key = str(after.id)
+
+    if not role_reject_id or member_key not in active:
+        return
+
+    if not any(r.id == role_reject_id for r in removed_roles):
+        return
+
+    expires_at = active[member_key]
+
+    if time.time() < expires_at:
+        # Timer hasn't expired yet — reapply the role
+        role_reject = after.guild.get_role(role_reject_id)
+        if role_reject:
+            try:
+                await after.add_roles(role_reject, reason="Interview reject period not yet expired — role reapplied")
+            except discord.Forbidden:
+                pass
+    else:
+        # Timer has naturally expired — clean up the record
+        active.pop(member_key, None)
+        config["active_rejections"] = active
+        data[guild_id] = config
+        save_interview_data(data)
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    # Nothing to do if roles didn't change
+    if before.roles == after.roles:
+        return
+
+    await handle_restricted_role_addition(before, after)
+    await handle_interview_reject_protection(before, after)
 
 
 # Run the bot using the token from the .env file
