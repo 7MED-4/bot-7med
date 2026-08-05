@@ -581,7 +581,6 @@ def _get_interview_config(interaction: discord.Interaction):
 async def interviewaccept(
     interaction: discord.Interaction,
     username: discord.Member,
-    reason: str,
     whitelister: discord.Member,
     by: discord.Member,
 ):
@@ -663,7 +662,7 @@ async def interviewreject(
     channel = interaction.guild.get_channel(config["channel_id"])
     content = (
         f"Whitelister : {whitelister.mention}\n"
-        f"{username.mention} **{config['reject_msg']} ❌ \"bonne chance\"** By: {by.mention}"
+        f"{username.mention} **{config['reject_msg']} ❌ bonne chance ** By: {by.mention}"
     )
 
     if channel:
