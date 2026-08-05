@@ -806,31 +806,42 @@ async def handle_interview_reject_protection(before: discord.Member, after: disc
         return
 
     role_reject_id = config.get("role_reject_id")
-    active = config.get("active_rejections", {})
-    member_key = str(after.id)
-
-    if not role_reject_id or member_key not in active:
+    if not role_reject_id:
         return
 
     if not any(r.id == role_reject_id for r in removed_roles):
         return
 
-    expires_at = active[member_key]
+    # Give Discord's audit log a moment to record the change
+    await asyncio.sleep(1)
 
-    if time.time() < expires_at:
-        # Timer hasn't expired yet — reapply the role
-        role_reject = after.guild.get_role(role_reject_id)
-        if role_reject:
-            try:
-                await after.add_roles(role_reject, reason="Interview reject period not yet expired — role reapplied")
-            except discord.Forbidden:
-                pass
-    else:
-        # Timer has naturally expired — clean up the record
-        active.pop(member_key, None)
-        config["active_rejections"] = active
-        data[guild_id] = config
-        save_interview_data(data)
+    try:
+        async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_role_update):
+            if entry.target.id != after.id:
+                continue
+
+            remover = after.guild.get_member(entry.user.id)
+            is_admin = bool(remover and remover.guild_permissions.administrator)
+
+            if is_admin:
+                # An administrator removed it — let it stick, clear any tracked timer
+                active = config.get("active_rejections", {})
+                active.pop(str(after.id), None)
+                config["active_rejections"] = active
+                data[guild_id] = config
+                save_interview_data(data)
+            else:
+                # Anyone else removed it — reapply, no matter what the timer says
+                role_reject = after.guild.get_role(role_reject_id)
+                if role_reject:
+                    try:
+                        await after.add_roles(role_reject, reason="Rejected role can only be removed by an administrator")
+                    except discord.Forbidden:
+                        pass
+            break
+    except discord.Forbidden:
+        # Bot is missing the "View Audit Log" permission
+        pass
 
 
 @bot.event
