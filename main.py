@@ -581,6 +581,7 @@ def _get_interview_config(interaction: discord.Interaction):
 async def interviewaccept(
     interaction: discord.Interaction,
     username: discord.Member,
+    reason: str,
     whitelister: discord.Member,
     by: discord.Member,
 ):
@@ -609,110 +610,16 @@ async def interviewaccept(
     await interaction.response.send_message(f"✅ {username.mention} has been accepted.", ephemeral=True)
 
 
-class InterviewRejectView(discord.ui.View):
-    """
-    Panel shown after /interviewreject is run — lets the interviewer pick
-    one or more predefined reasons before the rejection is finalized.
-    """
-
-    REASON_LABELS = {
-        "come_back_12h": "Come back after 12h",
-        "under_age": "Under Age",
-        "no_mic": "No Mic",
-    }
-
-    def __init__(self, invoker: discord.Member, guild: discord.Guild, config: dict,
-                 username: discord.Member, whitelister: discord.Member, by: discord.Member):
-        super().__init__(timeout=180)
-        self.invoker = invoker
-        self.guild = guild
-        self.config = config
-        self.username = username
-        self.whitelister = whitelister
-        self.by = by
-        self.selected_reasons: list[str] = []
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.invoker.id:
-            await interaction.response.send_message("❌ Only the person who ran /interviewreject can use this panel.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.select(
-        placeholder="Select reason(s) — up to 3",
-        min_values=1,
-        max_values=3,
-        options=[
-            discord.SelectOption(label="Come back after 12h", value="come_back_12h"),
-            discord.SelectOption(label="Under Age", value="under_age"),
-            discord.SelectOption(label="No Mic", value="no_mic"),
-        ],
-    )
-    async def reason_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        self.selected_reasons = select.values
-        await interaction.response.defer()
-
-    @discord.ui.button(label="Submit", style=discord.ButtonStyle.green)
-    async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.selected_reasons:
-            await interaction.response.send_message("❌ Pick at least one reason.", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-
-        # Build the role list: role_reject always applies, plus under_age/no_mic if picked
-        roles_to_add = []
-        role_reject = self.guild.get_role(self.config["role_reject_id"])
-        if role_reject:
-            roles_to_add.append(role_reject)
-
-        reason_labels = []
-        for value in self.selected_reasons:
-            reason_labels.append(self.REASON_LABELS[value])
-            if value == "under_age":
-                under_age_role = self.guild.get_role(self.config.get("under_age_role_id"))
-                if under_age_role:
-                    roles_to_add.append(under_age_role)
-            elif value == "no_mic":
-                no_mic_role = self.guild.get_role(self.config.get("no_mic_role_id"))
-                if no_mic_role:
-                    roles_to_add.append(no_mic_role)
-
-        try:
-            await self.username.add_roles(*roles_to_add)
-        except discord.Forbidden:
-            await interaction.followup.send("❌ I don't have permission to give one of those roles.", ephemeral=True)
-            return
-
-        # Start the reject-role protection timer
-        data = load_interview_data()
-        guild_id = str(self.guild.id)
-        guild_config = data[guild_id]
-        guild_config.setdefault("active_rejections", {})
-        guild_config["active_rejections"][str(self.username.id)] = time.time() + (self.config["reject_time_hours"] * 3600)
-        data[guild_id] = guild_config
-        save_interview_data(data)
-
-        reason_text = ", ".join(reason_labels)
-        channel = self.guild.get_channel(self.config["channel_id"])
-        content = (
-            f"Whitelister : {self.whitelister.mention}\n"
-            f"{self.username.mention} ** {self.config['reject_msg']} ❌ {reason_text} ❌ bonne chance ** By: {self.by.mention}"
-        )
-
-        if channel:
-            await channel.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-
-        for item in self.children:
-            item.disabled = True
-        await interaction.edit_original_response(content=f"✅ {self.username.mention} has been rejected.", view=self)
-        self.stop()
-
-
 @bot.tree.command(name="interviewreject", description="Reject an interview candidate")
+@app_commands.choices(reason=[
+    app_commands.Choice(name="Come back after 12h", value="come_back_12h"),
+    app_commands.Choice(name="Under Age", value="under_age"),
+    app_commands.Choice(name="No Mic", value="no_mic"),
+])
 async def interviewreject(
     interaction: discord.Interaction,
     username: discord.Member,
+    reason: app_commands.Choice[str],
     whitelister: discord.Member,
     by: discord.Member,
 ):
@@ -721,19 +628,48 @@ async def interviewreject(
         await interaction.response.send_message(error, ephemeral=True)
         return
 
-    view = InterviewRejectView(
-        invoker=interaction.user,
-        guild=interaction.guild,
-        config=config,
-        username=username,
-        whitelister=whitelister,
-        by=by,
+    # Build the role list: role_reject always applies, plus under_age/no_mic depending on reason
+    roles_to_add = []
+    role_reject = interaction.guild.get_role(config["role_reject_id"])
+    if role_reject:
+        roles_to_add.append(role_reject)
+
+    if reason.value == "under_age":
+        under_age_role = interaction.guild.get_role(config.get("under_age_role_id"))
+        if under_age_role:
+            roles_to_add.append(under_age_role)
+    elif reason.value == "no_mic":
+        no_mic_role = interaction.guild.get_role(config.get("no_mic_role_id"))
+        if no_mic_role:
+            roles_to_add.append(no_mic_role)
+
+    try:
+        await username.add_roles(*roles_to_add)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ I don't have permission to give one of those roles.", ephemeral=True)
+        return
+
+    # Start the reject-role protection timer
+    data = load_interview_data()
+    guild_id = str(interaction.guild.id)
+    guild_config = data[guild_id]
+    guild_config.setdefault("active_rejections", {})
+    guild_config["active_rejections"][str(username.id)] = time.time() + (config["reject_time_hours"] * 3600)
+    data[guild_id] = guild_config
+    save_interview_data(data)
+
+    # Note: the selected reason is used to decide which extra role to give,
+    # but it is intentionally NOT included in the message sent to the channel.
+    channel = interaction.guild.get_channel(config["channel_id"])
+    content = (
+        f"Whitelister : {whitelister.mention}\n"
+        f"{username.mention} **{config['reject_msg']} ❌ \"bonne chance\"** By: {by.mention}"
     )
-    await interaction.response.send_message(
-        "Select reason(s), then hit **Submit**:",
-        view=view,
-        ephemeral=True,
-    )
+
+    if channel:
+        await channel.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+
+    await interaction.response.send_message(f"✅ {username.mention} has been rejected.", ephemeral=True)
 
 
 async def handle_restricted_role_addition(before: discord.Member, after: discord.Member):
