@@ -531,6 +531,7 @@ async def setupinterview(
     reject_time: int,
     under_age: discord.Role,
     no_mic: discord.Role,
+    webhook: str,
 ):
     # Extra safety check in case a server has manually changed the command's permissions
     if not interaction.user.guild_permissions.administrator:
@@ -552,6 +553,7 @@ async def setupinterview(
         "reject_time_hours": reject_time,
         "under_age_role_id": under_age.id,
         "no_mic_role_id": no_mic.id,
+        "webhook_url": webhook,
         "active_rejections": active_rejections,
     }
     save_interview_data(data)
@@ -597,14 +599,17 @@ async def interviewaccept(
             await interaction.response.send_message("❌ I don't have permission to give that role.", ephemeral=True)
             return
 
-    channel = interaction.guild.get_channel(config["channel_id"])
     content = (
         f"Whitelister : {whitelister.mention}\n"
         f"{username.mention} **{config['accept_msg']}** By: {by.mention}"
     )
 
-    if channel:
-        await channel.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    try:
+        webhook = discord.Webhook.from_url(config["webhook_url"], client=bot)
+        await webhook.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to send via webhook. Check your URL. Error: {e}", ephemeral=True)
+        return
 
     await interaction.response.send_message(f"✅ {username.mention} has been accepted.", ephemeral=True)
 
@@ -657,14 +662,17 @@ async def interviewreject(
     data[guild_id] = guild_config
     save_interview_data(data)
 
-    channel = interaction.guild.get_channel(config["channel_id"])
     content = (
         f"Whitelister : {whitelister.mention}\n"
-        f"{username.mention} **{config['reject_msg']} ❌ {reason.name} ❌ bonne chance** By:{by.mention}"
+        f"{username.mention} **{config['reject_msg']} ❌ {reason.name} ❌ bonne chance ** By: {by.mention}"
     )
 
-    if channel:
-        await channel.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    try:
+        webhook = discord.Webhook.from_url(config["webhook_url"], client=bot)
+        await webhook.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to send via webhook. Check your URL. Error: {e}", ephemeral=True)
+        return
 
     await interaction.response.send_message(f"✅ {username.mention} has been rejected.", ephemeral=True)
 
