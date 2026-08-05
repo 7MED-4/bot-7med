@@ -581,6 +581,7 @@ def _get_interview_config(interaction: discord.Interaction):
 async def interviewaccept(
     interaction: discord.Interaction,
     username: discord.Member,
+    reason: str,
     whitelister: discord.Member,
     by: discord.Member,
 ):
@@ -657,12 +658,10 @@ async def interviewreject(
     data[guild_id] = guild_config
     save_interview_data(data)
 
-    # Note: the selected reason is used to decide which extra role to give,
-    # but it is intentionally NOT included in the message sent to the channel.
     channel = interaction.guild.get_channel(config["channel_id"])
     content = (
         f"Whitelister : {whitelister.mention}\n"
-        f"{username.mention} **{config['reject_msg']} ❌ bonne chance ** By: {by.mention}"
+        f"{username.mention} **{config['reject_msg']} ❌ {reason.name} ❌ bonne chance** {by.mention}"
     )
 
     if channel:
