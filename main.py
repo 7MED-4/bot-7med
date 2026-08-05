@@ -494,6 +494,7 @@ async def roleping(interaction: discord.Interaction, role: discord.Role):
         content = content[:1970] + "\n... *(list truncated — too many members for one message)*"
 
     await interaction.response.send_message(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+    
 
 
 # ==========================================
