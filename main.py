@@ -581,7 +581,6 @@ def _get_interview_config(interaction: discord.Interaction):
 async def interviewaccept(
     interaction: discord.Interaction,
     username: discord.Member,
-    reason: str,
     whitelister: discord.Member,
     by: discord.Member,
 ):
@@ -698,7 +697,7 @@ class InterviewRejectView(discord.ui.View):
         channel = self.guild.get_channel(self.config["channel_id"])
         content = (
             f"Whitelister : {self.whitelister.mention}\n"
-            f"{self.username.mention} **{self.config['reject_msg']} ❌ {reason_text} ❌ \"bonne chance\"** By: {self.by.mention}"
+            f"{self.username.mention} **{self.config['reject_msg']} ❌ {reason_text} ❌ \ bonne chance\** By: {self.by.mention}"
         )
 
         if channel:
