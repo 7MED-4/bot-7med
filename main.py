@@ -60,6 +60,10 @@ def save_data(data):
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
+
+    # Re-register the persistent duty panel view so its buttons keep working after a restart
+    bot.add_view(DutyPanelView())
+
     try:
         # Sync the slash commands globally so they appear in Discord
         synced = await bot.tree.sync()
@@ -498,183 +502,105 @@ async def roleping(interaction: discord.Interaction, role: discord.Role):
 
 
 # ==========================================
-# COMMANDS 7-9: interview accept/reject system
-# (its own storage file, independent from /setupwarn and /configristictedroles)
+# COMMAND 7: /setupduty
+# (own storage file, independent from the rest)
 # ==========================================
-INTERVIEW_DATA_FILE = "/app/data/interview_config.json"
+DUTY_DATA_FILE = "/app/data/duty_config.json"
 
 
-def load_interview_data():
-    os.makedirs(os.path.dirname(INTERVIEW_DATA_FILE), exist_ok=True)
-    if os.path.exists(INTERVIEW_DATA_FILE):
-        with open(INTERVIEW_DATA_FILE, "r") as f:
+def load_duty_data():
+    os.makedirs(os.path.dirname(DUTY_DATA_FILE), exist_ok=True)
+    if os.path.exists(DUTY_DATA_FILE):
+        with open(DUTY_DATA_FILE, "r") as f:
             return json.load(f)
     return {}
 
 
-def save_interview_data(data):
-    os.makedirs(os.path.dirname(INTERVIEW_DATA_FILE), exist_ok=True)
-    with open(INTERVIEW_DATA_FILE, "w") as f:
+def save_duty_data(data):
+    os.makedirs(os.path.dirname(DUTY_DATA_FILE), exist_ok=True)
+    with open(DUTY_DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
 
-@bot.tree.command(name="setupinterview", description="Configure the interview accept/reject system (Admins only)")
+class DutyPanelView(discord.ui.View):
+    """
+    Persistent view (timeout=None, static custom_id) attached to the duty panel embed.
+    Works across bot restarts as long as it's re-registered via bot.add_view() in on_ready.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Start Duty", style=discord.ButtonStyle.success, emoji="🟢", custom_id="duty_start_button")
+    async def start_duty(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load_duty_data()
+        config = data.get(str(interaction.guild.id))
+        if not config:
+            await interaction.response.send_message("❌ Duty system not set up! Run /setupduty first.", ephemeral=True)
+            return
+
+        duty_channel = interaction.guild.get_channel(config["duty_channel_id"])
+        now = discord.utils.utcnow()
+        content = (
+            "➳ Service Status: **ON**\n"
+            f"➳ Officer: {interaction.user.mention}\n"
+            f"➳ Time: `{discord.utils.format_dt(now, style='T')}`"
+        )
+
+        if duty_channel:
+            await duty_channel.send(content)
+
+        await interaction.response.send_message("✅ Duty started.", ephemeral=True)
+
+    @discord.ui.button(label="End Duty", style=discord.ButtonStyle.danger, emoji="🔴", custom_id="duty_end_button")
+    async def end_duty(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load_duty_data()
+        config = data.get(str(interaction.guild.id))
+        if not config:
+            await interaction.response.send_message("❌ Duty system not set up! Run /setupduty first.", ephemeral=True)
+            return
+
+        duty_channel = interaction.guild.get_channel(config["duty_channel_id"])
+        now = discord.utils.utcnow()
+        content = (
+            "➳ Service Status: **OFF**\n"
+            f"➳ Officer: {interaction.user.mention}\n"
+            f"➳ Time: `{discord.utils.format_dt(now, style='T')}`"
+        )
+
+        if duty_channel:
+            await duty_channel.send(content)
+
+        await interaction.response.send_message("✅ Duty ended.", ephemeral=True)
+
+
+@bot.tree.command(name="setupduty", description="Send the GN duty panel and set the log channel (Admins only)")
 @app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
-async def setupinterview(
+async def setupduty(
     interaction: discord.Interaction,
-    interview_role: discord.Role,
-    role_accept: discord.Role,
-    role_reject: discord.Role,
-    accept_msg: str,
-    reject_msg: str,
-    channel: discord.TextChannel,
-    reject_time: int,
-    under_age: discord.Role,
-    no_mic: discord.Role,
-    webhook: str,
+    send_panel: discord.TextChannel,
+    duty_channel: discord.TextChannel,
 ):
     # Extra safety check in case a server has manually changed the command's permissions
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
         return
 
-    data = load_interview_data()
-    guild_id = str(interaction.guild.id)
-    # Preserve any in-progress reject timers if this is a re-configuration
-    active_rejections = data.get(guild_id, {}).get("active_rejections", {})
+    data = load_duty_data()
+    data[str(interaction.guild.id)] = {"duty_channel_id": duty_channel.id}
+    save_duty_data(data)
 
-    data[guild_id] = {
-        "interview_role_id": interview_role.id,
-        "role_accept_id": role_accept.id,
-        "role_reject_id": role_reject.id,
-        "accept_msg": accept_msg,
-        "reject_msg": reject_msg,
-        "channel_id": channel.id,
-        "reject_time_hours": reject_time,
-        "under_age_role_id": under_age.id,
-        "no_mic_role_id": no_mic.id,
-        "webhook_url": webhook,
-        "active_rejections": active_rejections,
-    }
-    save_interview_data(data)
+    embed = discord.Embed(
+        title="🛡️ GN DUTY SYSTEM",
+        description="Use the buttons below to register the start or end of your Grade Nationale shift (Duty).",
+        color=0x2b2d42,
+    )
 
+    await send_panel.send(embed=embed, view=DutyPanelView())
     await interaction.response.send_message(
-        f"✅ Interview system configured. Only {interview_role.mention} can use /interviewaccept and /interviewreject.",
+        f"✅ Duty panel sent in {send_panel.mention}. Duty logs will go to {duty_channel.mention}.",
         ephemeral=True,
     )
-
-
-def _get_interview_config(interaction: discord.Interaction):
-    """Returns (config, error_message). error_message is None if everything checks out."""
-    data = load_interview_data()
-    config = data.get(str(interaction.guild.id))
-    if not config:
-        return None, "❌ Interview system not set up! Run /setupinterview first."
-
-    interview_role_id = config["interview_role_id"]
-    has_role = any(role.id == interview_role_id for role in interaction.user.roles)
-    if not has_role:
-        return None, "❌ You do not have the required role to use this command."
-
-    return config, None
-
-
-@bot.tree.command(name="interviewaccept", description="Accept an interview candidate")
-async def interviewaccept(
-    interaction: discord.Interaction,
-    username: discord.Member,
-    whitelister: discord.Member,
-    by: discord.Member,
-):
-    config, error = _get_interview_config(interaction)
-    if error:
-        await interaction.response.send_message(error, ephemeral=True)
-        return
-
-    role_accept = interaction.guild.get_role(config["role_accept_id"])
-    if role_accept:
-        try:
-            await username.add_roles(role_accept)
-        except discord.Forbidden:
-            await interaction.response.send_message("❌ I don't have permission to give that role.", ephemeral=True)
-            return
-
-    content = (
-        f"Whitelister : {whitelister.mention}\n"
-        f"{username.mention} **{config['accept_msg']}** By: {by.mention}"
-    )
-
-    try:
-        webhook = discord.Webhook.from_url(config["webhook_url"], client=bot)
-        await webhook.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to send via webhook. Check your URL. Error: {e}", ephemeral=True)
-        return
-
-    await interaction.response.send_message(f"✅ {username.mention} has been accepted.", ephemeral=True)
-
-
-@bot.tree.command(name="interviewreject", description="Reject an interview candidate")
-@app_commands.choices(reason=[
-    app_commands.Choice(name="Come back after 12h", value="come_back_12h"),
-    app_commands.Choice(name="Under Age", value="under_age"),
-    app_commands.Choice(name="No Mic", value="no_mic"),
-])
-async def interviewreject(
-    interaction: discord.Interaction,
-    username: discord.Member,
-    reason: app_commands.Choice[str],
-    whitelister: discord.Member,
-    by: discord.Member,
-):
-    config, error = _get_interview_config(interaction)
-    if error:
-        await interaction.response.send_message(error, ephemeral=True)
-        return
-
-    # Build the role list: role_reject always applies, plus under_age/no_mic depending on reason
-    roles_to_add = []
-    role_reject = interaction.guild.get_role(config["role_reject_id"])
-    if role_reject:
-        roles_to_add.append(role_reject)
-
-    if reason.value == "under_age":
-        under_age_role = interaction.guild.get_role(config.get("under_age_role_id"))
-        if under_age_role:
-            roles_to_add.append(under_age_role)
-    elif reason.value == "no_mic":
-        no_mic_role = interaction.guild.get_role(config.get("no_mic_role_id"))
-        if no_mic_role:
-            roles_to_add.append(no_mic_role)
-
-    try:
-        await username.add_roles(*roles_to_add)
-    except discord.Forbidden:
-        await interaction.response.send_message("❌ I don't have permission to give one of those roles.", ephemeral=True)
-        return
-
-    # Start the reject-role protection timer
-    data = load_interview_data()
-    guild_id = str(interaction.guild.id)
-    guild_config = data[guild_id]
-    guild_config.setdefault("active_rejections", {})
-    guild_config["active_rejections"][str(username.id)] = time.time() + (config["reject_time_hours"] * 3600)
-    data[guild_id] = guild_config
-    save_interview_data(data)
-
-    content = (
-        f"Whitelister : {whitelister.mention}\n"
-        f"{username.mention} **{config['reject_msg']} ❌ {reason.name} ❌ bonne chance ** By: {by.mention}"
-    )
-
-    try:
-        webhook = discord.Webhook.from_url(config["webhook_url"], client=bot)
-        await webhook.send(content, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to send via webhook. Check your URL. Error: {e}", ephemeral=True)
-        return
-
-    await interaction.response.send_message(f"✅ {username.mention} has been rejected.", ephemeral=True)
 
 
 async def handle_restricted_role_addition(before: discord.Member, after: discord.Member):
@@ -734,56 +660,6 @@ async def handle_restricted_role_addition(before: discord.Member, after: discord
         pass
 
 
-async def handle_interview_reject_protection(before: discord.Member, after: discord.Member):
-    removed_roles = [r for r in before.roles if r not in after.roles]
-    if not removed_roles:
-        return
-
-    data = load_interview_data()
-    guild_id = str(after.guild.id)
-    config = data.get(guild_id)
-    if not config:
-        return
-
-    role_reject_id = config.get("role_reject_id")
-    if not role_reject_id:
-        return
-
-    if not any(r.id == role_reject_id for r in removed_roles):
-        return
-
-    # Give Discord's audit log a moment to record the change
-    await asyncio.sleep(1)
-
-    try:
-        async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_role_update):
-            if entry.target.id != after.id:
-                continue
-
-            remover = after.guild.get_member(entry.user.id)
-            is_admin = bool(remover and remover.guild_permissions.administrator)
-
-            if is_admin:
-                # An administrator removed it — let it stick, clear any tracked timer
-                active = config.get("active_rejections", {})
-                active.pop(str(after.id), None)
-                config["active_rejections"] = active
-                data[guild_id] = config
-                save_interview_data(data)
-            else:
-                # Anyone else removed it — reapply, no matter what the timer says
-                role_reject = after.guild.get_role(role_reject_id)
-                if role_reject:
-                    try:
-                        await after.add_roles(role_reject, reason="Rejected role can only be removed by an administrator")
-                    except discord.Forbidden:
-                        pass
-            break
-    except discord.Forbidden:
-        # Bot is missing the "View Audit Log" permission
-        pass
-
-
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
     # Nothing to do if roles didn't change
@@ -791,7 +667,6 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         return
 
     await handle_restricted_role_addition(before, after)
-    await handle_interview_reject_protection(before, after)
 
 
 # Run the bot using the token from the .env file
