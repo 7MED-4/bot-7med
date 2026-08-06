@@ -584,6 +584,9 @@ class DutyPanelView(discord.ui.View):
                 ephemeral=True
             )
             return
+        await interaction.response.send_message("✅ Duty ended.", ephemeral=True)
+
+
 @bot.tree.command(name="setupduty", description="Send the GN duty panel and set the log channel (Admins only)")
 @app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
 async def setupduty(
