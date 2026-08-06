@@ -544,7 +544,7 @@ class DutyPanelView(discord.ui.View):
         content = (
             "➳ Service Status: **ON**\n"
             f"➳ Officer: {interaction.user.mention}\n"
-            f"➳ Time: `{discord.utils.format_dt(now, style='T')}`"
+            f"➳ Time: `{now.strftime('%H:%M')}`"
         )
 
         if duty_channel:
@@ -565,7 +565,7 @@ class DutyPanelView(discord.ui.View):
         content = (
             "➳ Service Status: **OFF**\n"
             f"➳ Officer: {interaction.user.mention}\n"
-            f"➳ Time: `{discord.utils.format_dt(now, style='T')}`"
+            f"➳ Time: `{now.strftime('%H:%M')}`"
         )
 
         if duty_channel:
@@ -644,7 +644,7 @@ async def handle_restricted_role_addition(before: discord.Member, after: discord
                                 description=(
                                     f"**User :** {after.mention} ({after})\n"
                                     f"**Role(s) Added :** {roles_text}\n"
-                                    f"**Time :** {discord.utils.format_dt(now, style='T')}"
+                                    f"**Time :** {now.strftime('%H:%M')}"
                                 ),
                                 color=0xff9900,
                             )
