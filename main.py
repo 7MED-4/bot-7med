@@ -580,6 +580,7 @@ async def setupduty(
     interaction: discord.Interaction,
     send_panel: discord.TextChannel,
     duty_channel: discord.TextChannel,
+    webhook_url: str 
 ):
     # Extra safety check in case a server has manually changed the command's permissions
     if not interaction.user.guild_permissions.administrator:
@@ -587,7 +588,7 @@ async def setupduty(
         return
 
     data = load_duty_data()
-    data[str(interaction.guild.id)] = {"duty_channel_id": duty_channel.id}
+    data[str(interaction.guild.id)] = {"duty_channel_id": duty_channel.id, "webhook_url": webhook_url}
     save_duty_data(data)
 
     embed = discord.Embed(
@@ -643,7 +644,7 @@ async def handle_restricted_role_addition(before: discord.Member, after: discord
                                 description=(
                                     f"**User :** {after.mention} ({after})\n"
                                     f"**Role(s) Added :** {roles_text}\n"
-                                    f"**Time :** {discord.utils.format_dt(now, style='F')}"
+                                    f"**Time :** {discord.utils.format_dt(now, style='T')}"
                                 ),
                                 color=0xff9900,
                             )
