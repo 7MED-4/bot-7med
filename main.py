@@ -575,12 +575,15 @@ class DutyPanelView(discord.ui.View):
             f"➳ Time: `{now.strftime('%H:%M')}`"
         )
 
-        if duty_channel:
-            await duty_channel.send(content)
-
-        await interaction.response.send_message("✅ Duty ended.", ephemeral=True)
-
-
+        try:
+            webhook = discord.Webhook.from_url(config["webhook_url"], client=interaction.client)
+            await webhook.send(content=content)
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Failed to send the webhook.\nError: {e}",
+                ephemeral=True
+            )
+            return
 @bot.tree.command(name="setupduty", description="Send the GN duty panel and set the log channel (Admins only)")
 @app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
 async def setupduty(
