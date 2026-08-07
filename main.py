@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+import aiohttp
 import asyncio
 import json
 import os
@@ -63,6 +64,7 @@ async def on_ready():
 
     # Re-register the persistent duty panel view so its buttons keep working after a restart
     bot.add_view(DutyPanelView())
+    bot.add_view(ProfilePanelView())
 
     try:
         # Sync the slash commands globally so they appear in Discord
@@ -613,6 +615,182 @@ async def setupduty(
     await send_panel.send(embed=embed, view=DutyPanelView())
     await interaction.response.send_message(
         f"✅ Duty panel sent in {send_panel.mention}. Duty logs will go to {duty_channel.mention}.",
+        ephemeral=True,
+    )
+
+
+# ==========================================
+# COMMAND 8: /setupprofile
+# (own storage file, independent from the rest)
+# ==========================================
+PROFILE_DATA_FILE = "/app/data/profile_config.json"
+
+
+def load_profile_data():
+    os.makedirs(os.path.dirname(PROFILE_DATA_FILE), exist_ok=True)
+    if os.path.exists(PROFILE_DATA_FILE):
+        with open(PROFILE_DATA_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_profile_data(data):
+    os.makedirs(os.path.dirname(PROFILE_DATA_FILE), exist_ok=True)
+    with open(PROFILE_DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+
+async def resolve_roblox_id(query: str, session: aiohttp.ClientSession):
+    """Accepts a username, a numeric user ID, or a profile URL and returns the Roblox user ID."""
+    query = query.strip()
+
+    # Profile URL, e.g. https://www.roblox.com/users/12345/profile
+    match = re.search(r"/users/(\d+)", query)
+    if match:
+        return int(match.group(1))
+
+    # Plain numeric ID
+    if query.isdigit():
+        return int(query)
+
+    # Otherwise treat it as a username
+    async with session.post(
+        "https://users.roblox.com/v1/usernames/users",
+        json={"usernames": [query], "excludeBannedUsers": False},
+    ) as resp:
+        if resp.status != 200:
+            return None
+        data = await resp.json()
+        if data.get("data"):
+            return data["data"][0]["id"]
+    return None
+
+
+class RobloxLookupModal(discord.ui.Modal, title="Roblox Account Lookup"):
+    lookup_input = discord.ui.TextInput(
+        label="Username, Profile Link, or User ID",
+        placeholder="Enter Username, ID, or Profile URL...",
+        required=True,
+        max_length=200,
+    )
+
+    def __init__(self, profil_channel_id: int):
+        super().__init__()
+        self.profil_channel_id = profil_channel_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        query = str(self.lookup_input.value)
+
+        async with aiohttp.ClientSession() as session:
+            roblox_id = await resolve_roblox_id(query, session)
+            if not roblox_id:
+                await interaction.followup.send(
+                    "❌ Couldn't find that Roblox account. Double check the username, ID, or profile link.",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                async with session.get(f"https://users.roblox.com/v1/users/{roblox_id}") as resp:
+                    if resp.status != 200:
+                        await interaction.followup.send("❌ Couldn't find that Roblox account.", ephemeral=True)
+                        return
+                    user_data = await resp.json()
+
+                friends_count = "N/A"
+                async with session.get(f"https://friends.roblox.com/v1/users/{roblox_id}/friends/count") as resp:
+                    if resp.status == 200:
+                        friends_data = await resp.json()
+                        friends_count = friends_data.get("count", "N/A")
+
+                avatar_url = None
+                async with session.get(
+                    f"https://thumbnails.roblox.com/v1/users/avatar?userIds={roblox_id}&size=420x420&format=Png&isCircular=false"
+                ) as resp:
+                    if resp.status == 200:
+                        thumb_data = await resp.json()
+                        if thumb_data.get("data"):
+                            avatar_url = thumb_data["data"][0].get("imageUrl")
+            except Exception as e:
+                await interaction.followup.send(f"❌ Error fetching Roblox data: {e}", ephemeral=True)
+                return
+
+        display_name = user_data.get("displayName", "Unknown")
+        username = user_data.get("name", "Unknown")
+        profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
+
+        embed = discord.Embed(
+            title="🎮 Roblox User Information",
+            description=f"**{display_name}**",
+            color=0x5865F2,
+        )
+        embed.set_author(name=f"Linked by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+        embed.add_field(name="👤 Display Name", value=display_name, inline=True)
+        embed.add_field(name="🏷️ Username", value=f"@{username}", inline=True)
+        embed.add_field(name="🆔 User ID", value=str(roblox_id), inline=True)
+        embed.add_field(name="👥 Friends", value=str(friends_count), inline=False)
+        embed.add_field(name="🔗 Profile Link", value=f"[Click Here to View Profile]({profile_url})", inline=False)
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
+        embed.timestamp = discord.utils.utcnow()
+
+        content = f"USER : {interaction.user.mention} , Roblox user : {username}"
+
+        target_channel = interaction.guild.get_channel(self.profil_channel_id)
+        if target_channel:
+            await target_channel.send(content=content, embed=embed)
+
+        await interaction.followup.send("✅ Your Roblox profile has been shared!", ephemeral=True)
+
+
+class ProfilePanelView(discord.ui.View):
+    """
+    Persistent view (timeout=None, static custom_id) attached to the profile panel embed.
+    Works across bot restarts as long as it's re-registered via bot.add_view() in on_ready.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="My Profile", style=discord.ButtonStyle.primary, emoji="🎮", custom_id="profile_lookup_button")
+    async def my_profile(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load_profile_data()
+        config = data.get(str(interaction.guild.id))
+        if not config:
+            await interaction.response.send_message("❌ Profile system not set up! Run /setupprofile first.", ephemeral=True)
+            return
+
+        await interaction.response.send_modal(RobloxLookupModal(config["profil_channel_id"]))
+
+
+@bot.tree.command(name="setupprofile", description="Send the Roblox profile lookup panel (Admins only)")
+@app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
+async def setupprofile(
+    interaction: discord.Interaction,
+    panel_send: discord.TextChannel,
+    profil_channel: discord.TextChannel,
+):
+    # Extra safety check in case a server has manually changed the command's permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
+        return
+
+    data = load_profile_data()
+    data[str(interaction.guild.id)] = {"profil_channel_id": profil_channel.id}
+    save_profile_data(data)
+
+    embed = discord.Embed(
+        title="📍 Roblox Profiles",
+        description="Welcome! Click the button below to share your Roblox profile .",
+        color=0x2b2d42,
+    )
+    embed.add_field(name="Supported Inputs:", value="• Username\n• User ID\n• Profile URL Link", inline=False)
+    embed.set_footer(text="Roblox Profile")
+
+    await panel_send.send(embed=embed, view=ProfilePanelView())
+    await interaction.response.send_message(
+        f"✅ Profile panel sent in {panel_send.mention}. Lookups will be posted in {profil_channel.mention}.",
         ephemeral=True,
     )
 
