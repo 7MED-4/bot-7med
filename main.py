@@ -1026,7 +1026,10 @@ async def scanmember(interaction: discord.Interaction, user: discord.Member, ser
         await interaction.response.send_message(f"❌ {user.mention} isn't a member of **{target_guild.name}**.", ephemeral=True)
         return
 
-    role_names = [r.mention for r in target_member.roles if not r.is_default()]
+    # Use plain role names, not mentions — a role mention only resolves within
+    # the server it belongs to, so a mention for another server's role would
+    # render as "unknown role" for anyone viewing it.
+    role_names = [f"• {r.name}" for r in target_member.roles if not r.is_default()]
     embed = discord.Embed(
         title=f"Roles in {target_guild.name}",
         description="\n".join(role_names) if role_names else "*No roles*",
