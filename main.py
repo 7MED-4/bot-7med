@@ -674,9 +674,9 @@ class RobloxLookupModal(discord.ui.Modal, title="Roblox Account Lookup"):
         max_length=200,
     )
 
-    def __init__(self, profil_channel_id: int):
+    def __init__(self, webhook_url: str):
         super().__init__()
-        self.profil_channel_id = profil_channel_id
+        self.webhook_url = webhook_url
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -737,9 +737,12 @@ class RobloxLookupModal(discord.ui.Modal, title="Roblox Account Lookup"):
 
         content = f"USER : {interaction.user.mention} , Roblox user : {username}"
 
-        target_channel = interaction.guild.get_channel(self.profil_channel_id)
-        if target_channel:
-            await target_channel.send(content=content, embed=embed)
+        try:
+            webhook = discord.Webhook.from_url(self.webhook_url, client=interaction.client)
+            await webhook.send(content=content, embed=embed)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to send via webhook. Check your URL. Error: {e}", ephemeral=True)
+            return
 
         await interaction.followup.send("✅ Your Roblox profile has been shared!", ephemeral=True)
 
@@ -761,7 +764,7 @@ class ProfilePanelView(discord.ui.View):
             await interaction.response.send_message("❌ Profile system not set up! Run /setupprofile first.", ephemeral=True)
             return
 
-        await interaction.response.send_modal(RobloxLookupModal(config["profil_channel_id"]))
+        await interaction.response.send_modal(RobloxLookupModal(config["webhook_url"]))
 
 
 @bot.tree.command(name="setupprofile", description="Send the Roblox profile lookup panel (Admins only)")
@@ -770,6 +773,7 @@ async def setupprofile(
     interaction: discord.Interaction,
     panel_send: discord.TextChannel,
     profil_channel: discord.TextChannel,
+    webhook: str,
 ):
     # Extra safety check in case a server has manually changed the command's permissions
     if not interaction.user.guild_permissions.administrator:
@@ -777,7 +781,7 @@ async def setupprofile(
         return
 
     data = load_profile_data()
-    data[str(interaction.guild.id)] = {"profil_channel_id": profil_channel.id}
+    data[str(interaction.guild.id)] = {"profil_channel_id": profil_channel.id, "webhook_url": webhook}
     save_profile_data(data)
 
     embed = discord.Embed(
