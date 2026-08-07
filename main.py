@@ -799,6 +799,285 @@ async def setupprofile(
     )
 
 
+# ==========================================
+# COMMANDS 9-13: cross-server connect system
+# (own storage file, independent from the rest)
+#
+# Vocabulary used below:
+#   "source server" = the server holding all the members (your "server 1")
+#   "child server"  = a server linked to a source server (your "server 2/3/4...")
+#   A child server always has exactly one source. A source can have many children.
+# ==========================================
+CONNECT_DATA_FILE = "/app/data/connect_config.json"
+
+
+def load_connect_data():
+    os.makedirs(os.path.dirname(CONNECT_DATA_FILE), exist_ok=True)
+    if os.path.exists(CONNECT_DATA_FILE):
+        with open(CONNECT_DATA_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_connect_data(data):
+    os.makedirs(os.path.dirname(CONNECT_DATA_FILE), exist_ok=True)
+    with open(CONNECT_DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+
+async def other_server_autocomplete(interaction: discord.Interaction, current: str):
+    """Lists every server the bot shares, except the one the command is being run in."""
+    choices = []
+    for guild in bot.guilds:
+        if guild.id == interaction.guild.id:
+            continue
+        if current.lower() in guild.name.lower():
+            choices.append(app_commands.Choice(name=guild.name, value=str(guild.id)))
+    return choices[:25]
+
+
+async def connected_server_autocomplete(interaction: discord.Interaction, current: str):
+    """Lists servers connected to the one the command is being run in (as source or as child)."""
+    data = load_connect_data()
+    this_id = interaction.guild.id
+    connected_ids = set()
+
+    this_config = data.get(str(this_id))
+    if this_config:
+        connected_ids.add(this_config["source_guild_id"])
+
+    for child_id, cfg in data.items():
+        if cfg.get("source_guild_id") == this_id:
+            connected_ids.add(int(child_id))
+
+    choices = []
+    for guild_id in connected_ids:
+        guild = bot.get_guild(guild_id)
+        if guild and current.lower() in guild.name.lower():
+            choices.append(app_commands.Choice(name=guild.name, value=str(guild_id)))
+    return choices[:25]
+
+
+async def source_role_autocomplete(interaction: discord.Interaction, current: str):
+    """Lists roles from THIS server's linked source server (for /newmemberrole)."""
+    data = load_connect_data()
+    config = data.get(str(interaction.guild.id))
+    if not config:
+        return []
+    source_guild = bot.get_guild(config["source_guild_id"])
+    if not source_guild:
+        return []
+    choices = []
+    for role in source_guild.roles:
+        if role.is_default():
+            continue
+        if current.lower() in role.name.lower():
+            choices.append(app_commands.Choice(name=role.name, value=str(role.id)))
+    return choices[:25]
+
+
+@bot.tree.command(name="connect", description="Link this server to a source server for role logging (Admins only)")
+@app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
+@app_commands.autocomplete(servers=other_server_autocomplete)
+async def connect(interaction: discord.Interaction, servers: str, logging: discord.TextChannel):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
+        return
+
+    source_guild_id = int(servers)
+    if source_guild_id == interaction.guild.id:
+        await interaction.response.send_message("❌ A server can't be linked to itself.", ephemeral=True)
+        return
+
+    source_guild = bot.get_guild(source_guild_id)
+    if not source_guild:
+        await interaction.response.send_message("❌ The bot isn't in that server.", ephemeral=True)
+        return
+
+    data = load_connect_data()
+    guild_id = str(interaction.guild.id)
+    config = data.setdefault(guild_id, {"role_mappings": []})
+    config["source_guild_id"] = source_guild_id
+    config["log_channel_id"] = logging.id
+    config.setdefault("role_mappings", [])
+    data[guild_id] = config
+    save_connect_data(data)
+
+    await interaction.response.send_message(
+        f"✅ This server is now linked to **{source_guild.name}**. New-member logs will be posted in {logging.mention}.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="disconnect", description="Unlink this server from a connected server (Admins only)")
+@app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
+@app_commands.autocomplete(servers=connected_server_autocomplete)
+async def disconnect(interaction: discord.Interaction, servers: str):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
+        return
+
+    target_id = int(servers)
+    data = load_connect_data()
+    guild_id = str(interaction.guild.id)
+    removed_something = False
+
+    # This server was the child pointing to that source
+    config = data.get(guild_id)
+    if config and config.get("source_guild_id") == target_id:
+        del data[guild_id]
+        removed_something = True
+
+    # This server was the source that a child pointed to
+    if str(target_id) in data and data[str(target_id)].get("source_guild_id") == interaction.guild.id:
+        del data[str(target_id)]
+        removed_something = True
+
+    if removed_something:
+        save_connect_data(data)
+        await interaction.response.send_message("✅ Connection removed.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ No connection found with that server.", ephemeral=True)
+
+
+@bot.tree.command(name="connectlist", description="Show servers connected to this one")
+async def connectlist(interaction: discord.Interaction):
+    data = load_connect_data()
+    this_id = interaction.guild.id
+    lines = []
+
+    this_config = data.get(str(this_id))
+    if this_config:
+        source_guild = bot.get_guild(this_config["source_guild_id"])
+        source_name = source_guild.name if source_guild else f"Unknown server ({this_config['source_guild_id']})"
+        lines.append(f"**Linked to (as a child of):** {source_name}")
+
+    children = []
+    for child_id, cfg in data.items():
+        if cfg.get("source_guild_id") == this_id:
+            child_guild = bot.get_guild(int(child_id))
+            children.append(child_guild.name if child_guild else f"Unknown server ({child_id})")
+    if children:
+        lines.append("**Servers linked to this one (as children):**\n" + "\n".join(f"• {name}" for name in children))
+
+    if not lines:
+        await interaction.response.send_message("❌ This server isn't connected to any other server.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="🔗 Connected Servers", description="\n\n".join(lines), color=0x5865F2)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="newmemberrole", description="Add/remove an auto-role mapping from the source server's roles (Admins only)")
+@app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
+@app_commands.autocomplete(source_role=source_role_autocomplete)
+async def newmemberrole(interaction: discord.Interaction, source_role: str, target_role: discord.Role):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
+        return
+
+    data = load_connect_data()
+    guild_id = str(interaction.guild.id)
+    config = data.get(guild_id)
+    if not config:
+        await interaction.response.send_message("❌ This server isn't connected to a source server yet! Run /connect first.", ephemeral=True)
+        return
+
+    source_guild = bot.get_guild(config["source_guild_id"])
+    source_role_id = int(source_role)
+    source_role_obj = source_guild.get_role(source_role_id) if source_guild else None
+    source_role_name = source_role_obj.name if source_role_obj else source_role
+
+    mappings = config.get("role_mappings", [])
+    existing = next(
+        (m for m in mappings if m["source_role_id"] == source_role_id and m["target_role_id"] == target_role.id),
+        None,
+    )
+
+    if existing:
+        mappings.remove(existing)
+        msg = f"🔓 Removed mapping: **{source_role_name}** (source) → {target_role.mention} (this server)."
+    else:
+        mappings.append({"source_role_id": source_role_id, "target_role_id": target_role.id})
+        msg = f"🔒 Added mapping: **{source_role_name}** (source) → {target_role.mention} (this server)."
+
+    config["role_mappings"] = mappings
+    data[guild_id] = config
+    save_connect_data(data)
+
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bot.tree.command(name="scanmember", description="Show a member's roles in a connected server (Admins only)")
+@app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
+@app_commands.autocomplete(server_connected_list=connected_server_autocomplete)
+async def scanmember(interaction: discord.Interaction, user: discord.Member, server_connected_list: str):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
+        return
+
+    target_guild = bot.get_guild(int(server_connected_list))
+    if not target_guild:
+        await interaction.response.send_message("❌ That server isn't reachable right now.", ephemeral=True)
+        return
+
+    target_member = target_guild.get_member(user.id)
+    if not target_member:
+        await interaction.response.send_message(f"❌ {user.mention} isn't a member of **{target_guild.name}**.", ephemeral=True)
+        return
+
+    role_names = [r.mention for r in target_member.roles if not r.is_default()]
+    embed = discord.Embed(
+        title=f"Roles in {target_guild.name}",
+        description="\n".join(role_names) if role_names else "*No roles*",
+        color=0x5865F2,
+    )
+    embed.set_author(name=str(target_member), icon_url=target_member.display_avatar.url)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+async def handle_connect_member_join(member: discord.Member):
+    """When someone joins a child server, log + apply mapped roles based on their roles in the source server."""
+    data = load_connect_data()
+    config = data.get(str(member.guild.id))
+    if not config:
+        return
+
+    source_guild = bot.get_guild(config["source_guild_id"])
+    log_channel = member.guild.get_channel(config["log_channel_id"])
+
+    source_member = source_guild.get_member(member.id) if source_guild else None
+
+    if not source_member:
+        content = f"📥 {member.mention} joined — not currently a member of **{source_guild.name if source_guild else 'the source server'}**."
+        if log_channel:
+            await log_channel.send(content)
+        return
+
+    role_names = ", ".join(r.name for r in source_member.roles if not r.is_default()) or "No roles"
+    content = (
+        f"📥 {member.mention} joined this server.\n"
+        f"➳ Roles in **{source_guild.name}** : {role_names}"
+    )
+    if log_channel:
+        await log_channel.send(content)
+
+    # Apply any configured role mappings
+    source_role_ids = {r.id for r in source_member.roles}
+    roles_to_add = []
+    for mapping in config.get("role_mappings", []):
+        if mapping["source_role_id"] in source_role_ids:
+            target_role = member.guild.get_role(mapping["target_role_id"])
+            if target_role:
+                roles_to_add.append(target_role)
+
+    if roles_to_add:
+        try:
+            await member.add_roles(*roles_to_add, reason="Auto-role from connected source server")
+        except discord.Forbidden:
+            pass
+
+
 async def handle_restricted_role_addition(before: discord.Member, after: discord.Member):
     added_roles = [r for r in after.roles if r not in before.roles]
     if not added_roles:
@@ -854,6 +1133,11 @@ async def handle_restricted_role_addition(before: discord.Member, after: discord
     except discord.Forbidden:
         # Bot is missing the "View Audit Log" permission
         pass
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    await handle_connect_member_join(member)
 
 
 @bot.event
