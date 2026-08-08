@@ -850,6 +850,7 @@ async def send_profile_lookup(interaction: discord.Interaction, config: dict, ro
             # Live presence check — this can only tell us if they're playing the
             # target game RIGHT NOW, not whether they've ever played it before.
             playing_status = "❌"
+            game_name = None
             try:
                 async with session.post(
                     "https://presence.roblox.com/v1/presence/users",
@@ -861,8 +862,11 @@ async def send_profile_lookup(interaction: discord.Interaction, config: dict, ro
                         if presences:
                             p = presences[0]
                             target_place_id = config.get("target_place_id")
-                            if p.get("userPresenceType") == 2 and p.get("placeId") == target_place_id:
-                                playing_status = "✅"
+                            if p.get("userPresenceType") == 2:
+                                # lastLocation is Roblox's human-readable "Playing <Game Name>" string
+                                game_name = p.get("lastLocation") or "Unknown game"
+                                if p.get("placeId") == target_place_id:
+                                    playing_status = "✅"
             except Exception:
                 pass
         except Exception as e:
@@ -873,6 +877,8 @@ async def send_profile_lookup(interaction: discord.Interaction, config: dict, ro
     username = user_data.get("name", "Unknown")
     profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
 
+    playing_value = f"{playing_status} {game_name}" if game_name else playing_status
+
     embed = discord.Embed(
         description=f"**[{display_name}]({profile_url})**",
         color=0x5865F2,
@@ -880,7 +886,7 @@ async def send_profile_lookup(interaction: discord.Interaction, config: dict, ro
     embed.add_field(name="👤 Display Name", value=display_name, inline=True)
     embed.add_field(name="🏷️ Username", value=f"@{username}", inline=True)
     embed.add_field(name="🆔 User ID", value=str(roblox_id), inline=True)
-    embed.add_field(name="🎮 The user are playing", value=playing_status, inline=True)
+    embed.add_field(name="🎮 The user are playing", value=playing_value, inline=True)
     if avatar_url:
         embed.set_thumbnail(url=avatar_url)
     embed.timestamp = discord.utils.utcnow()
