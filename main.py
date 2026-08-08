@@ -674,9 +674,10 @@ class RobloxLookupModal(discord.ui.Modal, title="Roblox Account Lookup"):
         max_length=200,
     )
 
-    def __init__(self, webhook_url: str):
+    def __init__(self, webhook_url: str, guild_id: int):
         super().__init__()
         self.webhook_url = webhook_url
+        self.guild_id = guild_id
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -719,6 +720,12 @@ class RobloxLookupModal(discord.ui.Modal, title="Roblox Account Lookup"):
         display_name = user_data.get("displayName", "Unknown")
         username = user_data.get("name", "Unknown")
         profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
+
+        # Remember this Discord -> Roblox link so /profile can look it up later
+        data = load_profile_data()
+        guild_config = data.setdefault(str(self.guild_id), {})
+        guild_config.setdefault("links", {})[str(interaction.user.id)] = roblox_id
+        save_profile_data(data)
 
         embed = discord.Embed(
             title="🎮 Roblox User Information",
@@ -764,7 +771,7 @@ class ProfilePanelView(discord.ui.View):
             await interaction.response.send_message("❌ Profile system not set up! Run /setupprofile first.", ephemeral=True)
             return
 
-        await interaction.response.send_modal(RobloxLookupModal(config["webhook_url"]))
+        await interaction.response.send_modal(RobloxLookupModal(config["webhook_url"], interaction.guild.id))
 
 
 @bot.tree.command(name="setupprofile", description="Send the Roblox profile lookup panel (Admins only)")
@@ -774,14 +781,33 @@ async def setupprofile(
     panel_send: discord.TextChannel,
     profil_channel: discord.TextChannel,
     webhook: str,
+    game_link: str,
 ):
     # Extra safety check in case a server has manually changed the command's permissions
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
         return
 
+    # game_link must be a normal Roblox game URL (e.g. roblox.com/games/<placeId>/name) —
+    # share links (roblox.com/share?code=...) can't be reliably resolved server-side.
+    match = re.search(r"/games/(\d+)", game_link)
+    if not match:
+        await interaction.response.send_message(
+            "❌ Couldn't find a place ID in that link. Use the normal game URL "
+            "(e.g. `https://www.roblox.com/games/1818/Classic-Crossroads`), not a share link.",
+            ephemeral=True,
+        )
+        return
+    place_id = int(match.group(1))
+
     data = load_profile_data()
-    data[str(interaction.guild.id)] = {"profil_channel_id": profil_channel.id, "webhook_url": webhook}
+    existing = data.get(str(interaction.guild.id), {})
+    data[str(interaction.guild.id)] = {
+        "profil_channel_id": profil_channel.id,
+        "webhook_url": webhook,
+        "target_place_id": place_id,
+        "links": existing.get("links", {}),
+    }
     save_profile_data(data)
 
     embed = discord.Embed(
@@ -797,6 +823,134 @@ async def setupprofile(
         f"✅ Profile panel sent in {panel_send.mention}. Lookups will be posted in {profil_channel.mention}.",
         ephemeral=True,
     )
+#==================================================
+#/profile command: Look up a Roblox profile by Discord user or Roblox username/ID/link
+#==================================================
+
+@bot.tree.command(name="profile", description="Look up a Roblox profile by Discord user or Roblox username/ID/link")
+@app_commands.choices(type=[
+    app_commands.Choice(name="Discord", value="discord"),
+    app_commands.Choice(name="Roblox", value="roblox"),
+])
+async def profile(
+    interaction: discord.Interaction,
+    type: app_commands.Choice[str],
+    discord_user: discord.Member = None,
+    roblox_query: str = None,
+):
+    data = load_profile_data()
+    config = data.get(str(interaction.guild.id))
+    if not config:
+        await interaction.response.send_message("❌ Profile system not set up! Run /setupprofile first.", ephemeral=True)
+        return
+
+    links = config.get("links", {})
+    mention_line = None
+
+    if type.value == "discord":
+        if discord_user is None:
+            await interaction.response.send_message("❌ Provide `discord_user` when type is Discord.", ephemeral=True)
+            return
+        roblox_id = links.get(str(discord_user.id))
+        if not roblox_id:
+            await interaction.response.send_message(
+                f"❌ No linked Roblox account found for {discord_user.mention}. They need to use the profile panel first.",
+                ephemeral=True,
+            )
+            return
+        mention_line = discord_user.mention
+    else:
+        if not roblox_query:
+            await interaction.response.send_message("❌ Provide `roblox_query` when type is Roblox.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        async with aiohttp.ClientSession() as session:
+            roblox_id = await resolve_roblox_id(roblox_query, session)
+        if not roblox_id:
+            await interaction.followup.send("❌ Couldn't find that Roblox account.", ephemeral=True)
+            return
+        # Reverse lookup — is this Roblox ID linked to any known Discord user in this server?
+        for discord_id, linked_roblox_id in links.items():
+            if linked_roblox_id == roblox_id:
+                member = interaction.guild.get_member(int(discord_id))
+                if member:
+                    mention_line = member.mention
+                break
+
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"https://users.roblox.com/v1/users/{roblox_id}") as resp:
+                if resp.status != 200:
+                    await interaction.followup.send("❌ Couldn't find that Roblox account.", ephemeral=True)
+                    return
+                user_data = await resp.json()
+
+            friends_count = "N/A"
+            async with session.get(f"https://friends.roblox.com/v1/users/{roblox_id}/friends/count") as resp:
+                if resp.status == 200:
+                    friends_data = await resp.json()
+                    friends_count = friends_data.get("count", "N/A")
+
+            avatar_url = None
+            async with session.get(
+                f"https://thumbnails.roblox.com/v1/users/avatar?userIds={roblox_id}&size=420x420&format=Png&isCircular=false"
+            ) as resp:
+                if resp.status == 200:
+                    thumb_data = await resp.json()
+                    if thumb_data.get("data"):
+                        avatar_url = thumb_data["data"][0].get("imageUrl")
+
+            # Live presence check — this can only tell us if they're playing the
+            # target game RIGHT NOW, not whether they've ever played it before.
+            playing_status = "Unknown"
+            try:
+                async with session.post(
+                    "https://presence.roblox.com/v1/presence/users",
+                    json={"userIds": [roblox_id]},
+                ) as resp:
+                    if resp.status == 200:
+                        presence_data = await resp.json()
+                        presences = presence_data.get("userPresences", [])
+                        if presences:
+                            p = presences[0]
+                            target_place_id = config.get("target_place_id")
+                            if p.get("userPresenceType") == 2 and p.get("placeId") == target_place_id:
+                                playing_status = "✅ Yes, playing right now"
+                            elif p.get("userPresenceType") == 2:
+                                playing_status = f"❌ No — currently playing a different game (`{p.get('lastLocation', 'unknown')}`)"
+                            else:
+                                playing_status = "❌ No — not currently in-game"
+            except Exception:
+                pass
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error fetching Roblox data: {e}", ephemeral=True)
+            return
+
+    display_name = user_data.get("displayName", "Unknown")
+    username = user_data.get("name", "Unknown")
+    profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
+
+    embed = discord.Embed(
+        title="🎮 Roblox User Information",
+        description=f"**{display_name}**",
+        color=0x5865F2,
+    )
+    embed.add_field(name="👤 Display Name", value=display_name, inline=True)
+    embed.add_field(name="🏷️ Username", value=f"@{username}", inline=True)
+    embed.add_field(name="🆔 User ID", value=str(roblox_id), inline=True)
+    embed.add_field(name="👥 Friends", value=str(friends_count), inline=False)
+    embed.add_field(name="🎮 Playing configured game", value=playing_status, inline=False)
+    embed.add_field(name="🔗 Profile Link", value=f"[Click Here to View Profile]({profile_url})", inline=False)
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+    embed.timestamp = discord.utils.utcnow()
+
+    content = mention_line if mention_line else "*(no linked Discord user found)*"
+
+    await interaction.followup.send(content=content, embed=embed)
 
 
 # ==========================================
