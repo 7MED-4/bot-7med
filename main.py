@@ -825,56 +825,8 @@ async def setupprofile(
     )
 
 
-@bot.tree.command(name="profile", description="Look up a Roblox profile by Discord user or Roblox username/ID/link")
-@app_commands.choices(type=[
-    app_commands.Choice(name="Discord", value="discord"),
-    app_commands.Choice(name="Roblox", value="roblox"),
-])
-async def profile(
-    interaction: discord.Interaction,
-    type: app_commands.Choice[str],
-    discord_user: discord.Member = None,
-    roblox_query: str = None,
-):
-    data = load_profile_data()
-    config = data.get(str(interaction.guild.id))
-    if not config:
-        await interaction.response.send_message("❌ Profile system not set up! Run /setupprofile first.", ephemeral=True)
-        return
-
-    links = config.get("links", {})
-    mention_line = None
-
-    if type.value == "discord":
-        if discord_user is None:
-            await interaction.response.send_message("❌ Provide `discord_user` when type is Discord.", ephemeral=True)
-            return
-        roblox_id = links.get(str(discord_user.id))
-        if not roblox_id:
-            await interaction.response.send_message(
-                f"❌ No linked Roblox account found for {discord_user.mention}. They need to use the profile panel first.",
-                ephemeral=True,
-            )
-            return
-        mention_line = discord_user.mention
-    else:
-        if not roblox_query:
-            await interaction.response.send_message("❌ Provide `roblox_query` when type is Roblox.", ephemeral=True)
-            return
-        await interaction.response.defer()
-        async with aiohttp.ClientSession() as session:
-            roblox_id = await resolve_roblox_id(roblox_query, session)
-        if not roblox_id:
-            await interaction.followup.send("❌ Couldn't find that Roblox account.", ephemeral=True)
-            return
-        # Reverse lookup — is this Roblox ID linked to any known Discord user in this server?
-        for discord_id, linked_roblox_id in links.items():
-            if linked_roblox_id == roblox_id:
-                member = interaction.guild.get_member(int(discord_id))
-                if member:
-                    mention_line = member.mention
-                break
-
+async def send_profile_lookup(interaction: discord.Interaction, config: dict, roblox_id: int, mention_line: str | None):
+    """Shared logic for both /profile discord and /profile roblox: fetch Roblox data and reply with the embed."""
     if not interaction.response.is_done():
         await interaction.response.defer()
 
@@ -885,12 +837,6 @@ async def profile(
                     await interaction.followup.send("❌ Couldn't find that Roblox account.", ephemeral=True)
                     return
                 user_data = await resp.json()
-
-            friends_count = "N/A"
-            async with session.get(f"https://friends.roblox.com/v1/users/{roblox_id}/friends/count") as resp:
-                if resp.status == 200:
-                    friends_data = await resp.json()
-                    friends_count = friends_data.get("count", "N/A")
 
             avatar_url = None
             async with session.get(
@@ -928,15 +874,13 @@ async def profile(
     profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
 
     embed = discord.Embed(
-        description=f"**{display_name}**",
+        description=f"**[{display_name}]({profile_url})**",
         color=0x5865F2,
     )
     embed.add_field(name="👤 Display Name", value=display_name, inline=True)
     embed.add_field(name="🏷️ Username", value=f"@{username}", inline=True)
     embed.add_field(name="🆔 User ID", value=str(roblox_id), inline=True)
-    embed.add_field(name="👥 Friends", value=str(friends_count), inline=False)
-    embed.add_field(name="🎮 The user are playing", value=playing_status, inline=False)
-    embed.add_field(name="🔗 Profile Link", value=f"[Click Here to View Profile]({profile_url})", inline=False)
+    embed.add_field(name="🎮 The user are playing", value=playing_status, inline=True)
     if avatar_url:
         embed.set_thumbnail(url=avatar_url)
     embed.timestamp = discord.utils.utcnow()
@@ -944,6 +888,61 @@ async def profile(
     content = mention_line if mention_line else "*(no linked Discord user found)*"
 
     await interaction.followup.send(content=content, embed=embed)
+
+
+profile_group = app_commands.Group(name="profile", description="Look up a Roblox profile")
+
+
+@profile_group.command(name="discord", description="Look up a Roblox profile by Discord user")
+async def profile_discord(interaction: discord.Interaction, discord_user: discord.Member):
+    data = load_profile_data()
+    config = data.get(str(interaction.guild.id))
+    if not config:
+        await interaction.response.send_message("❌ Profile system not set up! Run /setupprofile first.", ephemeral=True)
+        return
+
+    links = config.get("links", {})
+    roblox_id = links.get(str(discord_user.id))
+    if not roblox_id:
+        await interaction.response.send_message(
+            f"❌ No linked Roblox account found for {discord_user.mention}. They need to use the profile panel first.",
+            ephemeral=True,
+        )
+        return
+
+    await send_profile_lookup(interaction, config, roblox_id, discord_user.mention)
+
+
+@profile_group.command(name="roblox", description="Look up a Roblox profile by username, ID, or link")
+async def profile_roblox(interaction: discord.Interaction, roblox_query: str):
+    data = load_profile_data()
+    config = data.get(str(interaction.guild.id))
+    if not config:
+        await interaction.response.send_message("❌ Profile system not set up! Run /setupprofile first.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    async with aiohttp.ClientSession() as session:
+        roblox_id = await resolve_roblox_id(roblox_query, session)
+    if not roblox_id:
+        await interaction.followup.send("❌ Couldn't find that Roblox account.", ephemeral=True)
+        return
+
+    # Reverse lookup — is this Roblox ID linked to any known Discord user in this server?
+    mention_line = None
+    links = config.get("links", {})
+    for discord_id, linked_roblox_id in links.items():
+        if linked_roblox_id == roblox_id:
+            member = interaction.guild.get_member(int(discord_id))
+            if member:
+                mention_line = member.mention
+            break
+
+    await send_profile_lookup(interaction, config, roblox_id, mention_line)
+
+
+bot.tree.add_command(profile_group)
 
 
 # ==========================================
