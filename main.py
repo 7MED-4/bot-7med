@@ -65,6 +65,7 @@ async def on_ready():
     # Re-register the persistent duty panel view so its buttons keep working after a restart
     bot.add_view(DutyPanelView())
     bot.add_view(ProfilePanelView())
+    bot.add_view(TicketControlView())
 
     try:
         # Sync the slash commands globally so they appear in Discord
@@ -792,18 +793,81 @@ class ChangeProfileModal(discord.ui.Modal, title="Change Profile"):
             await interaction.followup.send("❌ I don't have permission to create a channel in that category.", ephemeral=True)
             return
 
+        ticket_embed = discord.Embed(
+            title="🎫 Profile Change Request",
+            description=f"**New Name requested:** {self.new_name.value}",
+            color=0xf1c40f,
+        )
+        ticket_embed.add_field(name="Requested by", value=interaction.user.mention, inline=True)
+        if help_role:
+            ticket_embed.add_field(name="Help Role", value=help_role.mention, inline=True)
+        ticket_embed.timestamp = discord.utils.utcnow()
+
+        content = f"{interaction.user.mention}" + (f" {help_role.mention}" if help_role else "")
         await ticket_channel.send(
-            f"{interaction.user.mention}\n**New Name requested:** {self.new_name.value}"
-            + (f"\n{help_role.mention}" if help_role else "")
+            content=content,
+            embed=ticket_embed,
+            view=TicketControlView(),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True),
         )
 
         log_channel = interaction.guild.get_channel(self.config.get("log_channel_id"))
         if log_channel:
-            await log_channel.send(
-                f"🎫 Ticket opened by {interaction.user.mention} in {ticket_channel.mention} — requested new name: **{self.new_name.value}**"
+            log_embed = discord.Embed(
+                title="🎫 Ticket Opened",
+                description=f"**User :** {interaction.user.mention}\n**Channel :** {ticket_channel.mention}\n**New Name :** {self.new_name.value}",
+                color=0xf1c40f,
             )
+            log_embed.timestamp = discord.utils.utcnow()
+            await log_channel.send(embed=log_embed)
 
         await interaction.followup.send(f"✅ Your request has been submitted in {ticket_channel.mention}.", ephemeral=True)
+
+
+class TicketControlView(discord.ui.View):
+    """
+    Persistent view attached to the ticket-opening embed. Claim/Close are both
+    restricted to admins or whoever holds this server's configured help_role,
+    re-checked live on every click (not baked in at creation) so it still works
+    correctly after a bot restart.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    def _is_staff(self, interaction: discord.Interaction, config: dict) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        help_role_id = config.get("help_role_id")
+        return bool(help_role_id) and any(r.id == help_role_id for r in interaction.user.roles)
+
+    @discord.ui.button(label="Claim", style=discord.ButtonStyle.primary, emoji="🙋", custom_id="ticket_claim_button")
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load_profile_data()
+        config = data.get(str(interaction.guild.id))
+        if not config or not self._is_staff(interaction, config):
+            await interaction.response.send_message("❌ Only Admins or the help role can claim this ticket.", ephemeral=True)
+            return
+
+        embed = interaction.message.embeds[0]
+        embed.add_field(name="Claimed by", value=interaction.user.mention, inline=False)
+        button.disabled = True
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="ticket_close_button")
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load_profile_data()
+        config = data.get(str(interaction.guild.id))
+        if not config or not self._is_staff(interaction, config):
+            await interaction.response.send_message("❌ Only Admins or the help role can close this ticket.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("🔒 Closing this ticket in 5 seconds...")
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.delete(reason=f"Ticket closed by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.followup.send("❌ I don't have permission to delete this channel.")
 
 
 class ProfilePanelView(discord.ui.View):
