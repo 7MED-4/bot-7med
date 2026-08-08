@@ -823,9 +823,7 @@ async def setupprofile(
         f"✅ Profile panel sent in {panel_send.mention}. Lookups will be posted in {profil_channel.mention}.",
         ephemeral=True,
     )
-#==================================================
-#/profile command: Look up a Roblox profile by Discord user or Roblox username/ID/link
-#==================================================
+
 
 @bot.tree.command(name="profile", description="Look up a Roblox profile by Discord user or Roblox username/ID/link")
 @app_commands.choices(type=[
@@ -905,7 +903,7 @@ async def profile(
 
             # Live presence check — this can only tell us if they're playing the
             # target game RIGHT NOW, not whether they've ever played it before.
-            playing_status = "Unknown"
+            playing_status = "❌"
             try:
                 async with session.post(
                     "https://presence.roblox.com/v1/presence/users",
@@ -918,11 +916,7 @@ async def profile(
                             p = presences[0]
                             target_place_id = config.get("target_place_id")
                             if p.get("userPresenceType") == 2 and p.get("placeId") == target_place_id:
-                                playing_status = "✅ Yes, playing right now"
-                            elif p.get("userPresenceType") == 2:
-                                playing_status = f"❌ No — currently playing a different game (`{p.get('lastLocation', 'unknown')}`)"
-                            else:
-                                playing_status = "❌ No — not currently in-game"
+                                playing_status = "✅"
             except Exception:
                 pass
         except Exception as e:
@@ -934,7 +928,6 @@ async def profile(
     profile_url = f"https://www.roblox.com/users/{roblox_id}/profile"
 
     embed = discord.Embed(
-        title="🎮 Roblox User Information",
         description=f"**{display_name}**",
         color=0x5865F2,
     )
@@ -942,7 +935,7 @@ async def profile(
     embed.add_field(name="🏷️ Username", value=f"@{username}", inline=True)
     embed.add_field(name="🆔 User ID", value=str(roblox_id), inline=True)
     embed.add_field(name="👥 Friends", value=str(friends_count), inline=False)
-    embed.add_field(name="🎮 Playing configured game", value=playing_status, inline=False)
+    embed.add_field(name="🎮 The user are playing", value=playing_status, inline=False)
     embed.add_field(name="🔗 Profile Link", value=f"[Click Here to View Profile]({profile_url})", inline=False)
     if avatar_url:
         embed.set_thumbnail(url=avatar_url)
