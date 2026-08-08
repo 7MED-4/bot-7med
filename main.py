@@ -754,6 +754,58 @@ class RobloxLookupModal(discord.ui.Modal, title="Roblox Account Lookup"):
         await interaction.followup.send("✅ Your Roblox profile has been shared!", ephemeral=True)
 
 
+class ChangeProfileModal(discord.ui.Modal, title="Change Profile"):
+    new_name = discord.ui.TextInput(
+        label="New Name",
+        placeholder="Enter the new name you'd like...",
+        required=True,
+        max_length=100,
+    )
+
+    def __init__(self, config: dict):
+        super().__init__()
+        self.config = config
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        category = interaction.guild.get_channel(self.config["ticket_category_id"])
+        help_role = interaction.guild.get_role(self.config["help_role_id"])
+
+        # Sanitize the requester's name into a valid channel name
+        safe_name = re.sub(r"[^a-z0-9-]", "", interaction.user.name.lower()) or "user"
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        }
+        if help_role:
+            overwrites[help_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        try:
+            ticket_channel = await interaction.guild.create_text_channel(
+                name=f"profile-change-{safe_name}",
+                category=category,
+                overwrites=overwrites,
+                reason=f"Profile change ticket opened by {interaction.user}",
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("❌ I don't have permission to create a channel in that category.", ephemeral=True)
+            return
+
+        await ticket_channel.send(
+            f"{interaction.user.mention}\n**New Name requested:** {self.new_name.value}"
+            + (f"\n{help_role.mention}" if help_role else "")
+        )
+
+        log_channel = interaction.guild.get_channel(self.config.get("log_channel_id"))
+        if log_channel:
+            await log_channel.send(
+                f"🎫 Ticket opened by {interaction.user.mention} in {ticket_channel.mention} — requested new name: **{self.new_name.value}**"
+            )
+
+        await interaction.followup.send(f"✅ Your request has been submitted in {ticket_channel.mention}.", ephemeral=True)
+
+
 class ProfilePanelView(discord.ui.View):
     """
     Persistent view (timeout=None, static custom_id) attached to the profile panel embed.
@@ -773,6 +825,18 @@ class ProfilePanelView(discord.ui.View):
 
         await interaction.response.send_modal(RobloxLookupModal(config["webhook_url"], interaction.guild.id))
 
+    # NOTE: Discord only offers 5 button styles (blurple, grey, green, red, link) — there is no
+    # native yellow. This uses grey (secondary) as the closest available option.
+    @discord.ui.button(label="Change Profile", style=discord.ButtonStyle.secondary, emoji="🟡", custom_id="profile_change_button")
+    async def change_profile(self, interaction: discord.Interaction, button: discord.ui.Button):
+        data = load_profile_data()
+        config = data.get(str(interaction.guild.id))
+        if not config or "ticket_category_id" not in config:
+            await interaction.response.send_message("❌ Profile system not fully set up! Run /setupprofile first.", ephemeral=True)
+            return
+
+        await interaction.response.send_modal(ChangeProfileModal(config))
+
 
 @bot.tree.command(name="setupprofile", description="Send the Roblox profile lookup panel (Admins only)")
 @app_commands.default_permissions(administrator=True)  # Only admins can see/use this command
@@ -782,6 +846,9 @@ async def setupprofile(
     profil_channel: discord.TextChannel,
     webhook: str,
     game_link: str,
+    ticket_categorie: discord.CategoryChannel,
+    help_role: discord.Role,
+    log_channel: discord.TextChannel,
 ):
     # Extra safety check in case a server has manually changed the command's permissions
     if not interaction.user.guild_permissions.administrator:
@@ -806,6 +873,9 @@ async def setupprofile(
         "profil_channel_id": profil_channel.id,
         "webhook_url": webhook,
         "target_place_id": place_id,
+        "ticket_category_id": ticket_categorie.id,
+        "help_role_id": help_role.id,
+        "log_channel_id": log_channel.id,
         "links": existing.get("links", {}),
     }
     save_profile_data(data)
@@ -949,6 +1019,36 @@ async def profile_roblox(interaction: discord.Interaction, roblox_query: str):
 
 
 bot.tree.add_command(profile_group)
+
+
+@bot.tree.command(name="profilelink", description="Manually link a Discord user to a Roblox account (Help role only)")
+async def profilelink(interaction: discord.Interaction, discord_user: discord.Member, roblox_query: str):
+    data = load_profile_data()
+    config = data.get(str(interaction.guild.id))
+    if not config:
+        await interaction.response.send_message("❌ Profile system not set up! Run /setupprofile first.", ephemeral=True)
+        return
+
+    help_role_id = config.get("help_role_id")
+    has_role = bool(help_role_id) and any(r.id == help_role_id for r in interaction.user.roles)
+    if not has_role:
+        await interaction.response.send_message("❌ You do not have the required role to use this command.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    async with aiohttp.ClientSession() as session:
+        roblox_id = await resolve_roblox_id(roblox_query, session)
+
+    if not roblox_id:
+        await interaction.followup.send("❌ Couldn't find that Roblox account. Double check the username, ID, or profile link.", ephemeral=True)
+        return
+
+    config.setdefault("links", {})[str(discord_user.id)] = roblox_id
+    data[str(interaction.guild.id)] = config
+    save_profile_data(data)
+
+    await interaction.followup.send(f"✅ Linked {discord_user.mention} to Roblox account ID `{roblox_id}`.", ephemeral=True)
 
 
 # ==========================================
